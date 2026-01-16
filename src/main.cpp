@@ -241,9 +241,9 @@ void run_leader(const unsigned int node_id) {
             // ibv_cq* cq = ibv_create_cq(id->verbs, 4096, nullptr, nullptr, 0);
             // if (!cq) throw std::runtime_error("ibv_create_cq failed");
 
-            // id->pd = pd;
-            // id->recv_cq = cq;
-            // id->send_cq = cq;
+            id->pd = pd;
+            id->recv_cq = cq;
+            id->send_cq = cq;
 
             ibv_qp_init_attr qp_attr{};
             qp_attr.qp_type = IBV_QPT_RC;
