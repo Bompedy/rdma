@@ -33,6 +33,22 @@ constexpr unsigned short RDMA_PORT = 6969;
 void run_leader_mu(unsigned int node_id, const std::vector<Peer>& peers) {
     static char buf[4096];
 
+    auto die_if_null = [&](const char* name, const void* p) {
+        if (!p) {
+            std::cerr << "[mu] " << name << " is null\n";
+            std::abort();
+        }
+    };
+
+    die_if_null("id", peers[0].id);
+    die_if_null("id->verbs", peers[0].id->verbs);
+    die_if_null("id->qp", peers[0].id->qp);
+    die_if_null("id->pd", peers[0].id->pd);
+    // die_if_null("id->recv_cq", id->recv_cq);
+    // die_if_null("id->send_cq", id->send_cq);
+    die_if_null("id->qp->recv_cq", peers[0].id->qp->recv_cq);
+    die_if_null("id->qp->send_cq", peers[0].id->qp->send_cq);
+
     const ibv_mr* mr = ibv_reg_mr(
         peers[0].id->pd,
         buf,
