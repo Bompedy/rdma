@@ -31,55 +31,38 @@ struct Peer {
 constexpr unsigned short RDMA_PORT = 6969;
 
 void run_leader_mu(unsigned int node_id, const std::vector<Peer>& peers) {
-    // One buffer + MR per node_id
-    static char bufs[5][4096];
-    static ibv_mr* mrs[64] = {};
+    static char buf[4096];
 
-    const rdma_cm_id* any = nullptr;
-    for (const auto& peer : peers) {
-        if (peer.id) { any = peer.id; break; }
-    }
-    if (!any) return;
+    const ibv_mr* mr = ibv_reg_mr(
+        peers[0].id->pd,
+        buf,
+        sizeof(buf),
+        IBV_ACCESS_LOCAL_WRITE
+    );
+    if (!mr) throw std::runtime_error("ibv_reg_mr failed");
 
-    // Register MRs once per node
+    ibv_sge sge{};
+    sge.addr = reinterpret_cast<uintptr_t>(buf);
+    sge.length = sizeof(buf);
+    sge.lkey = mr->lkey;
+
     for (const auto& peer : peers) {
         if (!peer.id) continue;
-        const uint32_t nid = peer.node_id;
-
-        if (!mrs[nid]) {
-            mrs[nid] = ibv_reg_mr(
-                any->pd,
-                bufs[nid],
-                sizeof(bufs[nid]),
-                IBV_ACCESS_LOCAL_WRITE
-            );
-            if (!mrs[nid]) throw std::runtime_error("ibv_reg_mr failed");
-        }
-
-        ibv_sge sge{};
-        sge.addr   = reinterpret_cast<uintptr_t>(bufs[nid]);
-        sge.length = sizeof(bufs[nid]);
-        sge.lkey   = mrs[nid]->lkey;
 
         ibv_recv_wr rwr{};
-        rwr.wr_id   = nid;
+        rwr.wr_id = peer.node_id;
         rwr.sg_list = &sge;
         rwr.num_sge = 1;
 
         ibv_recv_wr* bad = nullptr;
-        if (ibv_post_recv(peer.id->qp, &rwr, &bad))
+        if (ibv_post_recv(peer.id->qp, &rwr, &bad)) {
             throw std::runtime_error("ibv_post_recv failed");
+        }
     }
 
     while (true) {
         ibv_wc wc{};
-        while (true) {
-            const auto polls = ibv_poll_cq(any->qp->recv_cq, 1, &wc);
-            if (polls != 0) {
-                std::cout << "Got polls: " << polls << std::endl; 
-                break;
-            }
-        }
+        while (ibv_poll_cq(peers[0].id->qp->recv_cq, 1, &wc) == 0) {}
 
         if (wc.status != IBV_WC_SUCCESS) {
             std::cerr << "[leader] WC error " << wc.status << "\n";
@@ -87,31 +70,19 @@ void run_leader_mu(unsigned int node_id, const std::vector<Peer>& peers) {
         }
 
         if (wc.opcode != IBV_WC_RECV) continue;
+        std::cout << "[leader] received " << wc.byte_len << " bytes from node " << wc.wr_id << "\n";
 
-        const uint32_t from = static_cast<uint32_t>(wc.wr_id);
-
-        std::cout << "[leader] received " << wc.byte_len
-                  << " bytes from node " << from << "\n";
-
-        // Re-post recv on that same peer's QP with that peer's buffer
         for (const auto& peer : peers) {
-            if (!peer.id) continue;
-            if (peer.node_id != from) continue;
+            if (peer.id && peer.node_id == wc.wr_id) {
+                ibv_recv_wr rwr{};
+                rwr.wr_id = peer.node_id;
+                rwr.sg_list = &sge;
+                rwr.num_sge = 1;
 
-            ibv_sge sge{};
-            sge.addr   = reinterpret_cast<uintptr_t>(bufs[from]);
-            sge.length = sizeof(bufs[from]);
-            sge.lkey   = mrs[from]->lkey;
-
-            ibv_recv_wr rwr{};
-            rwr.wr_id   = from;
-            rwr.sg_list = &sge;
-            rwr.num_sge = 1;
-
-            ibv_recv_wr* bad = nullptr;
-            if (ibv_post_recv(peer.id->qp, &rwr, &bad))
-                throw std::runtime_error("ibv_post_recv failed");
-            break;
+                ibv_recv_wr* bad = nullptr;
+                if (ibv_post_recv(peer.id->qp, &rwr, &bad)) throw std::runtime_error("ibv_post_recv failed");
+                break;
+            }
         }
     }
 }
@@ -224,6 +195,11 @@ void run_leader(const unsigned int node_id) {
 
     std::cout << "[leader] waiting for " << expected << " nodes\n";
 
+    ibv_pd* pd = ibv_alloc_pd(listener->verbs);
+    if (!pd) throw std::runtime_error("ibv_alloc_pd failed");
+    ibv_cq* cq = ibv_create_cq(listener->verbs, 4096, nullptr, nullptr, 0);
+    if (!cq) throw std::runtime_error("ibv_create_cq failed");
+
     int connected = 0;
     while (connected < expected) {
         rdma_cm_event* event = nullptr;
@@ -247,10 +223,10 @@ void run_leader(const unsigned int node_id) {
                 continue;
             }
 
-            ibv_pd* pd = ibv_alloc_pd(id->verbs);
-            if (!pd) throw std::runtime_error("ibv_alloc_pd failed");
-            ibv_cq* cq = ibv_create_cq(id->verbs, 256, nullptr, nullptr, 0);
-            if (!cq) throw std::runtime_error("ibv_create_cq failed");
+            // ibv_pd* pd = ibv_alloc_pd(id->verbs);
+            // if (!pd) throw std::runtime_error("ibv_alloc_pd failed");
+            // ibv_cq* cq = ibv_create_cq(id->verbs, 4096, nullptr, nullptr, 0);
+            // if (!cq) throw std::runtime_error("ibv_create_cq failed");
 
             ibv_qp_init_attr qp_attr{};
             qp_attr.qp_type = IBV_QPT_RC;
