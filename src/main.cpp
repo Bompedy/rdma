@@ -55,20 +55,16 @@ void run_leader(unsigned int node_id) {
             break;
         }
 
-        std::cout << "[leader] CM event: " << event->event << "\n";
-
         if (event->event == RDMA_CM_EVENT_CONNECT_REQUEST) {
             rdma_cm_id* id = event->id;
 
             uint32_t remote = 0;
-            std::cout << "[leader] private_data_len=" << event->param.conn.private_data_len << "\n";
-
             if (event->param.conn.private_data) {
                 uint64_t tmp = 0;
                 std::memcpy(&tmp, event->param.conn.private_data, 8);
                 remote = static_cast<uint32_t>(tmp);
             } else {
-                std::cout << "[leader] CONNECT_REQUEST missing/invalid node_id, rejecting\n";
+                std::cout << "[leader] CONNECT_REQUEST missing private_data, rejecting" << std::endl;
                 rdma_reject(event->id, nullptr, 0);
                 rdma_ack_cm_event(event);
                 continue;
@@ -88,8 +84,13 @@ void run_leader(unsigned int node_id) {
             }
 
             rdma_conn_param accept{};
-            rdma_accept(id, &accept);
-
+            if (rdma_accept(id, &accept)) {
+                perror("rdma_accept");
+                rdma_destroy_qp(id);
+                rdma_reject(id, nullptr, 0);
+                rdma_ack_cm_event(event);
+                continue;
+            }
             peers.emplace(remote, Peer{remote, id, id->qp});
 
             std::cout << "[leader] connected node " << remote << "\n";
@@ -137,9 +138,6 @@ void run_follower(const unsigned int node_id) {
     param.private_data = &nid;
     param.private_data_len = sizeof(uint32_t);
 
-    std::cout << "[follower " << node_id << "] sending private_data_len="
-              << sizeof(uint32_t) << "\n";
-
     if (rdma_connect(id, &param)) {
         perror("rdma_connect");
         std::exit(1);
@@ -152,7 +150,6 @@ void run_follower(const unsigned int node_id) {
 
     std::cout << "[follower " << node_id << "] connect event: " << event->event << "\n";
     rdma_ack_cm_event(event);
-
     std::cout << "[follower " << node_id << "] connected to leader\n";
 
     pause();
