@@ -63,12 +63,11 @@ void run_leader(unsigned int node_id) {
             uint32_t remote = 0;
             std::cout << "[leader] private_data_len=" << event->param.conn.private_data_len << "\n";
 
-            if (event->param.conn.private_data &&
-                event->param.conn.private_data_len == sizeof(remote)) {
-                std::memcpy(&remote, event->param.conn.private_data, sizeof(remote));
-                std::cout << "[leader] CONNECT_REQUEST from node_id=" << remote << "\n";
-            }
-            else {
+            if (event->param.conn.private_data) {
+                uint64_t tmp = 0;
+                std::memcpy(&tmp, event->param.conn.private_data, 8);
+                remote = static_cast<uint32_t>(tmp);
+            } else {
                 std::cout << "[leader] CONNECT_REQUEST missing/invalid node_id, rejecting\n";
                 rdma_reject(event->id, nullptr, 0);
                 rdma_ack_cm_event(event);
