@@ -50,7 +50,12 @@ void run_leader(unsigned int node_id) {
 
     while (static_cast<int>(peers.size()) < expected) {
         rdma_cm_event* event = nullptr;
-        rdma_get_cm_event(ec, &event);
+        if (rdma_get_cm_event(ec, &event)) {
+            perror("rdma_get_cm_event");
+            break;
+        }
+
+        std::cout << "[leader] CM event: " << event->event << "\n";
 
         if (event->event == RDMA_CM_EVENT_CONNECT_REQUEST) {
             rdma_cm_id* id = event->id;
@@ -58,7 +63,11 @@ void run_leader(unsigned int node_id) {
             int remote_node = -1;
             if (event->param.conn.private_data && event->param.conn.private_data_len == sizeof(int)) {
                 std::memcpy(&remote_node, event->param.conn.private_data, sizeof(int));
+
+                std::cout << "[leader] CONNECT_REQUEST from node_id="
+                   << remote_node << "\n";
             } else {
+                std::cout << "[leader] CONNECT_REQUEST missing node_id, rejecting\n";
                 rdma_reject(id, nullptr, 0);
                 rdma_ack_cm_event(event);
                 continue;
