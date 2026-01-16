@@ -61,28 +61,33 @@ void run_leader_mu(unsigned int node_id, const std::vector<Peer>& peers) {
         }
     }
 
+    constexpr int MAX_WC = 16;
+    ibv_wc wcs[MAX_WC];
+
     while (true) {
-        ibv_wc wc{};
-        while (ibv_poll_cq(any->qp->recv_cq, 1, &wc) == 0) {}
+        const int n = ibv_poll_cq(any->qp->recv_cq, MAX_WC, wcs);
+        if (n < 0) throw std::runtime_error("ibv_poll_cq failed");
+        if (n == 0) continue;
 
-        if (wc.status != IBV_WC_SUCCESS) {
-            std::cerr << "[leader] WC error " << wc.status << "\n";
-            break;
-        }
+        for (int i = 0; i < n; ++i) {
+            const ibv_wc& wc = wcs[i];
 
-        if (wc.opcode != IBV_WC_RECV) continue;
-        std::cout << "[leader] received " << wc.byte_len << " bytes from node " << wc.wr_id << "\n";
-
-        for (const auto& peer : peers) {
-            if (peer.id && peer.node_id == wc.wr_id) {
-                ibv_recv_wr rwr{};
-                rwr.wr_id = peer.node_id;
-                rwr.sg_list = &sge;
-                rwr.num_sge = 1;
-
-                ibv_recv_wr* bad = nullptr;
-                if (ibv_post_recv(peer.id->qp, &rwr, &bad)) throw std::runtime_error("ibv_post_recv failed");
+            if (wc.status != IBV_WC_SUCCESS) {
+                std::cerr << "[leader] WC error " << wc.status << "\n";
                 break;
+            }
+
+            if (wc.opcode != IBV_WC_RECV) continue;
+            std::cout << "[leader] received " << wc.byte_len << " bytes from node " << wc.wr_id << "\n";
+
+            ibv_recv_wr rwr{};
+            rwr.wr_id   = peers[wc.wr_id].node_id;
+            rwr.sg_list = &sge;
+            rwr.num_sge = 1;
+
+            ibv_recv_wr* bad = nullptr;
+            if (ibv_post_recv(peers[wc.wr_id].id->qp, &rwr, &bad)) {
+                throw std::runtime_error("ibv_post_recv failed");
             }
         }
     }
