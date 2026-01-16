@@ -58,6 +58,7 @@ void run_leader(const unsigned int node_id) {
 
     size_t connected = 0;
     while (connected < expected) {
+        std::cout << connected << " connected\n"; 
         rdma_cm_event* event = nullptr;
         if (rdma_get_cm_event(ec, &event)) {
             perror("rdma_get_cm_event");
