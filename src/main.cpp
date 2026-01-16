@@ -106,8 +106,8 @@ void run_follower_mu(const unsigned int node_id, const rdma_cm_id* id) {
     die_if_null("id->verbs", id->verbs);
     die_if_null("id->qp", id->qp);
     die_if_null("id->pd", id->pd);
-    die_if_null("id->recv_cq", id->recv_cq);
-    die_if_null("id->send_cq", id->send_cq);
+    // die_if_null("id->recv_cq", id->recv_cq);
+    // die_if_null("id->send_cq", id->send_cq);
     die_if_null("id->qp->recv_cq", id->qp->recv_cq);
     die_if_null("id->qp->send_cq", id->qp->send_cq);
 
