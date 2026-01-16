@@ -55,7 +55,8 @@ void run_leader(const unsigned int node_id) {
 
     std::cout << "[leader] waiting for " << expected << " nodes\n";
 
-    while (static_cast<int>(peers.size()) < expected) {
+    int connected = 0;
+    while (connected < expected) {
         rdma_cm_event* event = nullptr;
         if (rdma_get_cm_event(ec, &event)) {
             perror("rdma_get_cm_event");
@@ -100,6 +101,7 @@ void run_leader(const unsigned int node_id) {
             }
             peers[remote] = Peer{remote, id};
 
+            ++connected;
             std::cout << "[leader] connected node " << remote << "\n";
         }
 
