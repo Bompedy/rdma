@@ -10,9 +10,9 @@
 #include <netinet/in.h>
 
 const std::vector<std::string> CLUSTER_NODES = {
-    "10.10.0.1",
-    "10.10.0.2",
-    "10.10.0.3",
+    "10.10.1.1",
+    "10.10.1.2",
+    "10.10.1.3",
 };
 
 unsigned int get_node_id() {
