@@ -30,11 +30,10 @@ struct Peer {
 constexpr unsigned short RDMA_PORT = 6969;
 
 void run_leader_mu(unsigned int node_id, const std::vector<Peer>& peers) {
-    pause();
+
 }
 
 void run_follower_mu(unsigned int node_id, const rdma_cm_id* id) {
-    pause();
 }
 
 void run_leader(const unsigned int node_id) {
@@ -56,71 +55,53 @@ void run_leader(const unsigned int node_id) {
 
     std::cout << "[leader] waiting for " << expected << " nodes\n";
 
-    size_t connected = 0;
-    while (connected < expected) {
-        std::cout << connected << " connected\n";
+    while (static_cast<int>(peers.size()) < expected) {
         rdma_cm_event* event = nullptr;
         if (rdma_get_cm_event(ec, &event)) {
             perror("rdma_get_cm_event");
             break;
         }
 
-        if (event->event != RDMA_CM_EVENT_CONNECT_REQUEST) {
-            rdma_ack_cm_event(event);
-            continue;
+        if (event->event == RDMA_CM_EVENT_CONNECT_REQUEST) {
+            rdma_cm_id* id = event->id;
+
+            uint32_t remote = 0;
+            if (event->param.conn.private_data) {
+                uint64_t tmp = 0;
+                std::memcpy(&tmp, event->param.conn.private_data, 8);
+                remote = static_cast<uint32_t>(tmp);
+            } else {
+                std::cout << "[leader] CONNECT_REQUEST missing private_data, rejecting" << std::endl;
+                rdma_reject(event->id, nullptr, 0);
+                rdma_ack_cm_event(event);
+                continue;
+            }
+
+            ibv_qp_init_attr qp_attr{};
+            qp_attr.qp_type = IBV_QPT_RC;
+            qp_attr.cap.max_send_wr = 128;
+            qp_attr.cap.max_recv_wr = 128;
+            qp_attr.cap.max_send_sge = 1;
+            qp_attr.cap.max_recv_sge = 1;
+
+            if (rdma_create_qp(id, nullptr, &qp_attr)) {
+                rdma_reject(id, nullptr, 0);
+                rdma_ack_cm_event(event);
+                continue;
+            }
+
+            rdma_conn_param accept{};
+            if (rdma_accept(id, &accept)) {
+                perror("rdma_accept");
+                rdma_destroy_qp(id);
+                rdma_reject(id, nullptr, 0);
+                rdma_ack_cm_event(event);
+                continue;
+            }
+            peers[remote] = Peer{remote, id};
+
+            std::cout << "[leader] connected node " << remote << "\n";
         }
-
-        rdma_cm_id* id = event->id;
-
-        if (!event->param.conn.private_data ||
-            event->param.conn.private_data_len != sizeof(uint32_t)) {
-            rdma_reject(id, nullptr, 0);
-            rdma_ack_cm_event(event);
-            continue;
-        }
-
-        uint32_t remote = 0;
-        std::memcpy(&remote,event->param.conn.private_data, sizeof(uint32_t));
-
-        if (remote >= peers.size() || remote == node_id) {
-            std::cout << "Rejecting!" << std::endl;
-            rdma_reject(id, nullptr, 0);
-            rdma_ack_cm_event(event);
-            continue;
-        }
-
-        if (peers[remote].id != nullptr) {
-            std::cout << "Rejecting2!" << std::endl;
-            rdma_reject(id, nullptr, 0);
-            rdma_ack_cm_event(event);
-            continue;
-        }
-
-        ibv_qp_init_attr qp_attr{};
-        qp_attr.qp_type = IBV_QPT_RC;
-        qp_attr.cap.max_send_wr = 128;
-        qp_attr.cap.max_recv_wr = 128;
-        qp_attr.cap.max_send_sge = 1;
-        qp_attr.cap.max_recv_sge = 1;
-
-        if (rdma_create_qp(id, nullptr, &qp_attr)) {
-            rdma_reject(id, nullptr, 0);
-            rdma_ack_cm_event(event);
-            continue;
-        }
-
-        rdma_conn_param accept{};
-        if (rdma_accept(id, &accept)) {
-            rdma_destroy_qp(id);
-            rdma_reject(id, nullptr, 0);
-            rdma_ack_cm_event(event);
-            continue;
-        }
-
-        peers[remote] = Peer{remote, id};
-        connected++;
-
-        std::cout << "[leader] connected node " << remote << "\n";
 
         rdma_ack_cm_event(event);
     }
@@ -186,8 +167,7 @@ int main() {
         const unsigned int node_id = get_node_id();
         if (node_id == 0) run_leader(node_id);
         else run_follower(node_id);
-    }
-    catch (const std::exception& e) {
+    } catch (const std::exception& e) {
         std::cerr << "[error] " << e.what() << "\n";
         return 1;
     }
