@@ -1,61 +1,147 @@
-#include <iostream>
+#include <rdma/rdma_cma.h>
 #include <infiniband/verbs.h>
+#include <arpa/inet.h>
+#include <cstring>
+#include <iostream>
+#include <ranges>
+#include <unordered_map>
+#include <unistd.h>
+#include <vector>
+#include <netinet/in.h>
 
+const std::vector<std::string> CLUSTER_NODES = {
+    "10.10.0.1",
+    "10.10.0.2",
+    "10.10.0.3",
+};
 
+unsigned int get_node_id() {
+    const char* id = std::getenv("NODE_ID");
+    if (!id) throw std::runtime_error("NODE_ID not set");
+    return std::stoi(id);
+}
+
+struct Peer {
+    int node_id;
+    rdma_cm_id* id;
+    ibv_qp* qp;
+};
+
+constexpr unsigned short RDMA_PORT = 6969;
+
+void run_leader(unsigned int node_id) {
+    std::cout << "[leader] starting\n";
+
+    std::unordered_map<int, Peer> peers;
+    const unsigned int expected = CLUSTER_NODES.size() - 1;
+    rdma_event_channel* ec = rdma_create_event_channel();
+    rdma_cm_id* listener = nullptr;
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(RDMA_PORT);
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (!ec) throw std::runtime_error("rdma_create_event_channel failed");
+    if (rdma_create_id(ec, &listener, nullptr, RDMA_PS_TCP)) throw std::runtime_error("rdma_create_id failed");
+    if (rdma_bind_addr(listener, reinterpret_cast<sockaddr*>(&addr))) throw std::runtime_error("rdma_bind_addr failed");
+    if (rdma_listen(listener, 16)) throw std::runtime_error("rdma_listen failed");
+
+    std::cout << "[leader] waiting for " << expected << " nodes\n";
+
+    while (static_cast<int>(peers.size()) < expected) {
+        rdma_cm_event* event = nullptr;
+        rdma_get_cm_event(ec, &event);
+
+        if (event->event == RDMA_CM_EVENT_CONNECT_REQUEST) {
+            rdma_cm_id* id = event->id;
+
+            int remote_node = -1;
+            if (event->param.conn.private_data && event->param.conn.private_data_len == sizeof(int)) {
+                std::memcpy(&remote_node, event->param.conn.private_data, sizeof(int));
+            } else {
+                rdma_reject(id, nullptr, 0);
+                rdma_ack_cm_event(event);
+                continue;
+            }
+
+            ibv_qp_init_attr qp_attr{};
+            qp_attr.qp_type = IBV_QPT_RC;
+            qp_attr.cap.max_send_wr = 128;
+            qp_attr.cap.max_recv_wr = 128;
+            qp_attr.cap.max_send_sge = 1;
+            qp_attr.cap.max_recv_sge = 1;
+
+            if (rdma_create_qp(id, nullptr, &qp_attr)) {
+                rdma_reject(id, nullptr, 0);
+                rdma_ack_cm_event(event);
+                continue;
+            }
+
+            rdma_conn_param accept{};
+            rdma_accept(id, &accept);
+
+            peers.emplace(remote_node, Peer{remote_node, id, id->qp});
+
+            std::cout << "[leader] connected node " << remote_node << "\n";
+        }
+
+        rdma_ack_cm_event(event);
+    }
+
+    std::cout << "[leader] all nodes connected\n";
+    pause();
+}
+
+void run_follower(const unsigned int node_id) {
+    std::cout << "[follower " << node_id << "] starting\n";
+
+    rdma_event_channel* ec = rdma_create_event_channel();
+    rdma_cm_id* id = nullptr;
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(RDMA_PORT);
+    inet_pton(AF_INET, CLUSTER_NODES[0].c_str(), &addr.sin_addr);
+    if (!ec) throw std::runtime_error("rdma_create_event_channel failed");
+    if (rdma_create_id(ec, &id, nullptr, RDMA_PS_TCP)) throw std::runtime_error("rdma_create_id failed");
+
+    rdma_resolve_addr(id, nullptr, reinterpret_cast<sockaddr*>(&addr), 2000);
+    rdma_cm_event* event = nullptr;
+    rdma_get_cm_event(ec, &event);
+    rdma_ack_cm_event(event);
+    rdma_resolve_route(id, 2000);
+    rdma_get_cm_event(ec, &event);
+    rdma_ack_cm_event(event);
+
+    ibv_qp_init_attr qp_attr{};
+    qp_attr.qp_type = IBV_QPT_RC;
+    qp_attr.cap.max_send_wr = 128;
+    qp_attr.cap.max_recv_wr = 128;
+    qp_attr.cap.max_send_sge = 1;
+    qp_attr.cap.max_recv_sge = 1;
+
+    if (rdma_create_qp(id, nullptr, &qp_attr)) throw std::runtime_error("rdma_create_qp failed");
+
+    rdma_conn_param param{};
+    param.private_data = &node_id;
+    param.private_data_len = sizeof(node_id);
+
+    rdma_connect(id, &param);
+    rdma_get_cm_event(ec, &event);
+    rdma_ack_cm_event(event);
+
+    std::cout << "[follower " << node_id << "] connected to leader\n";
+
+    pause();
+}
 
 int main() {
-    int num_devices = 0;
-
-    // Get the list of available RDMA devices
-    ibv_device **dev_list = ibv_get_device_list(&num_devices);
-    if (!dev_list) {
-        std::cerr << "Failed to get IB devices list" << std::endl;
+    try {
+        const unsigned int node_id = get_node_id();
+        if (node_id == 0) run_leader(node_id);
+        else run_follower(node_id);
+    } catch (const std::exception& e) {
+        std::cerr << "[error] " << e.what() << "\n";
         return 1;
     }
-
-    std::cout << "Found " << num_devices << " RDMA device(s)" << std::endl;
-
-    if (num_devices == 0) {
-        ibv_free_device_list(dev_list);
-        return 0;
-    }
-
-    // Just open the first device
-    ibv_context *ctx = ibv_open_device(dev_list[0]);
-    if (!ctx) {
-        std::cerr << "Failed to open the device" << std::endl;
-        ibv_free_device_list(dev_list);
-        return 1;
-    }
-
-    std::cout << "Opened device: " << ibv_get_device_name(dev_list[0]) << std::endl;
-
-    // Query the device attributes
-    ibv_device_attr dev_attr{};
-    if (ibv_query_device(ctx, &dev_attr)) {
-        std::cerr << "Failed to query device" << std::endl;
-        ibv_close_device(ctx);
-        ibv_free_device_list(dev_list);
-        return 1;
-    }
-
-    std::cout << "Max QP: " << dev_attr.max_qp << std::endl;
-    std::cout << "Max MR size: " << dev_attr.max_mr_size << std::endl;
-
-    // Query port info
-    for (int port = 1; port <= dev_attr.phys_port_cnt; port++) {
-        ibv_port_attr port_attr{};
-        if (!ibv_query_port(ctx, port, &port_attr)) {
-            std::cout << "Port " << port
-                      << " state: " << port_attr.state
-                      << " link_layer: " << (int)port_attr.link_layer
-                      << " max_mtu: " << port_attr.max_mtu << std::endl;
-        }
-    }
-
-    // Clean up
-    ibv_close_device(ctx);
-    ibv_free_device_list(dev_list);
-
     return 0;
 }
