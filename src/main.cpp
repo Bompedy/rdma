@@ -24,17 +24,144 @@ unsigned int get_node_id() {
 struct Peer {
     uint32_t node_id;
     rdma_cm_id* id;
-    ibv_qp* qp;
 };
 
 constexpr unsigned short RDMA_PORT = 6969;
 
 void run_leader_mu(unsigned int node_id, const std::vector<Peer>& peers) {
-    pause();
+    static char buf[4096];
+
+    const rdma_cm_id* any = nullptr;
+    for (const auto& peer : peers) {
+        if (peer.id) {
+            any = peer.id;
+            break;
+        }
+    }
+    if (!any) return;
+
+    const ibv_mr* mr = ibv_reg_mr(
+        any->pd,
+        buf,
+        sizeof(buf),
+        IBV_ACCESS_LOCAL_WRITE
+    );
+    if (!mr) throw std::runtime_error("ibv_reg_mr failed");
+
+    ibv_sge sge{};
+    sge.addr = reinterpret_cast<uintptr_t>(buf);
+    sge.length = sizeof(buf);
+    sge.lkey = mr->lkey;
+
+    for (const auto& peer : peers) {
+        if (!peer.id) continue;
+
+        ibv_recv_wr rwr{};
+        rwr.wr_id = peer.node_id;
+        rwr.sg_list = &sge;
+        rwr.num_sge = 1;
+
+        ibv_recv_wr* bad = nullptr;
+        if (ibv_post_recv(peer.id->qp, &rwr, &bad)) {
+            throw std::runtime_error("ibv_post_recv failed");
+        }
+    }
+
+    while (true) {
+        ibv_wc wc{};
+        while (ibv_poll_cq(any->recv_cq, 1, &wc) == 0) {}
+
+        if (wc.status != IBV_WC_SUCCESS) {
+            std::cerr << "[leader] WC error " << wc.status << "\n";
+            break;
+        }
+
+        if (wc.opcode != IBV_WC_RECV) continue;
+        std::cout << "[leader] received " << wc.byte_len << " bytes from node " << wc.wr_id << "\n";
+
+        for (const auto& peer : peers) {
+            if (peer.id && peer.node_id == wc.wr_id) {
+                ibv_recv_wr rwr{};
+                rwr.wr_id = peer.node_id;
+                rwr.sg_list = &sge;
+                rwr.num_sge = 1;
+
+                ibv_recv_wr* bad = nullptr;
+                if (ibv_post_recv(peer.id->qp, &rwr, &bad)) throw std::runtime_error("ibv_post_recv failed");
+                break;
+            }
+        }
+    }
 }
 
-void run_follower_mu(unsigned int node_id, const rdma_cm_id* id) {
-    pause();
+void run_follower_mu(const unsigned int node_id, const rdma_cm_id* id) {
+    const char msg[] = "hello from follower";
+
+    const ibv_mr* send_mr = ibv_reg_mr(
+        id->pd,
+        (void*)msg,
+        sizeof(msg),
+        IBV_ACCESS_LOCAL_WRITE
+    );
+    if (!send_mr) throw std::runtime_error("ibv_reg_mr(send) failed");
+
+    ibv_sge send_sge{};
+    send_sge.addr   = reinterpret_cast<uintptr_t>(msg);
+    send_sge.length = sizeof(msg);
+    send_sge.lkey   = send_mr->lkey;
+
+    ibv_send_wr swr{};
+    swr.wr_id      = node_id;           // identify sender
+    swr.sg_list    = &send_sge;
+    swr.num_sge    = 1;
+    swr.opcode     = IBV_WR_SEND;
+    swr.send_flags = IBV_SEND_SIGNALED; // get completion
+
+    ibv_send_wr* sbad = nullptr;
+    if (ibv_post_send(id->qp, &swr, &sbad))
+        throw std::runtime_error("ibv_post_send failed");
+
+    ibv_wc swc{};
+    while (ibv_poll_cq(id->send_cq, 1, &swc) == 0) {}
+
+    if (swc.status != IBV_WC_SUCCESS)
+        throw std::runtime_error("send failed");
+
+    static char buf[4096];
+    const ibv_mr* mr = ibv_reg_mr(
+        id->pd,
+        buf,
+        sizeof(buf),
+        IBV_ACCESS_LOCAL_WRITE
+    );
+    if (!mr) throw std::runtime_error("ibv_reg_mr failed");
+
+    ibv_sge sge{};
+    sge.addr = reinterpret_cast<uintptr_t>(buf);
+    sge.length = sizeof(buf);
+    sge.lkey = mr->lkey;
+
+    ibv_recv_wr rwr{};
+    rwr.wr_id = 1;
+    rwr.sg_list = &sge;
+    rwr.num_sge = 1;
+
+    ibv_recv_wr* bad = nullptr;
+    if (ibv_post_recv(id->qp, &rwr, &bad)) throw std::runtime_error("ibv_post_recv failed");
+
+    while (true) {
+        ibv_wc wc{};
+        while (ibv_poll_cq(id->recv_cq, 1, &wc) == 0) {}
+
+        if (wc.status != IBV_WC_SUCCESS) {
+            std::cerr << "[follower] WC error " << wc.status << "\n";
+            break;
+        }
+
+        if (wc.opcode != IBV_WC_RECV) continue;
+        std::cout << "[follower " << node_id << "] received " << wc.byte_len << " bytes\n";
+        if (ibv_post_recv(id->qp, &rwr, &bad)) throw std::runtime_error("ibv_post_recv failed");
+    }
 }
 
 void run_leader(const unsigned int node_id) {
@@ -79,14 +206,21 @@ void run_leader(const unsigned int node_id) {
                 continue;
             }
 
+            ibv_pd* pd = ibv_alloc_pd(id->verbs);
+            if (!pd) throw std::runtime_error("ibv_alloc_pd failed");
+            ibv_cq* cq = ibv_create_cq(id->verbs, 256, nullptr, nullptr, 0);
+            if (!cq) throw std::runtime_error("ibv_create_cq failed");
+
             ibv_qp_init_attr qp_attr{};
             qp_attr.qp_type = IBV_QPT_RC;
-            qp_attr.cap.max_send_wr = 128;
-            qp_attr.cap.max_recv_wr = 128;
+            qp_attr.send_cq = cq;
+            qp_attr.recv_cq = cq;
+            qp_attr.cap.max_send_wr  = 128;
+            qp_attr.cap.max_recv_wr  = 128;
             qp_attr.cap.max_send_sge = 1;
             qp_attr.cap.max_recv_sge = 1;
 
-            if (rdma_create_qp(id, nullptr, &qp_attr)) {
+            if (rdma_create_qp(id, pd, &qp_attr)) {
                 rdma_reject(id, nullptr, 0);
                 rdma_ack_cm_event(event);
                 continue;
@@ -134,14 +268,21 @@ void run_follower(const unsigned int node_id) {
     rdma_get_cm_event(ec, &event);
     rdma_ack_cm_event(event);
 
+    ibv_pd* pd = ibv_alloc_pd(id->verbs);
+    if (!pd) throw std::runtime_error("ibv_alloc_pd failed");
+    ibv_cq* cq = ibv_create_cq(id->verbs, 256, nullptr, nullptr, 0);
+    if (!cq) throw std::runtime_error("ibv_create_cq failed");
+
     ibv_qp_init_attr qp_attr{};
     qp_attr.qp_type = IBV_QPT_RC;
-    qp_attr.cap.max_send_wr = 128;
-    qp_attr.cap.max_recv_wr = 128;
+    qp_attr.send_cq = cq;
+    qp_attr.recv_cq = cq;
+    qp_attr.cap.max_send_wr  = 128;
+    qp_attr.cap.max_recv_wr  = 128;
     qp_attr.cap.max_send_sge = 1;
     qp_attr.cap.max_recv_sge = 1;
 
-    if (rdma_create_qp(id, nullptr, &qp_attr)) throw std::runtime_error("rdma_create_qp failed");
+    if (rdma_create_qp(id, pd, &qp_attr)) throw std::runtime_error("rdma_create_qp failed");
 
     const auto nid = static_cast<uint32_t>(node_id);
 
