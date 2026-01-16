@@ -181,16 +181,8 @@ void run_leader(const unsigned int node_id) {
 
     std::cout << "[leader] waiting for " << expected << " nodes\n";
 
-    ibv_pd* pd = ibv_alloc_pd(listener->verbs);
-    if (!pd) throw std::runtime_error("ibv_alloc_pd failed");
-    ibv_cq* cq = ibv_create_cq(listener->verbs, 4096, nullptr, nullptr, 0);
-    if (!cq) throw std::runtime_error("ibv_create_cq failed");
-
-    std::cout << "makes it here" << std::endl;
-
-    // ibv_pd* pd = nullptr;
-    // ibv_cq* cq = nullptr;
-
+    ibv_pd* pd = nullptr;
+    ibv_cq* cq = nullptr;
 
     int connected = 0;
     while (connected < expected) {
@@ -222,16 +214,6 @@ void run_leader(const unsigned int node_id) {
                 cq = ibv_create_cq(id->verbs, 4096, nullptr, nullptr, 0);
                 if (!cq) throw std::runtime_error("ibv_create_cq failed");
             }
-
-
-            // ibv_pd* pd = ibv_alloc_pd(id->verbs);
-            // if (!pd) throw std::runtime_error("ibv_alloc_pd failed");
-            // ibv_cq* cq = ibv_create_cq(id->verbs, 4096, nullptr, nullptr, 0);
-            // if (!cq) throw std::runtime_error("ibv_create_cq failed");
-            //
-            // id->pd = pd;
-            // id->recv_cq = cq;
-            // id->send_cq = cq;
 
             ibv_qp_init_attr qp_attr{};
             qp_attr.qp_type = IBV_QPT_RC;
