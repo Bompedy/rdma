@@ -95,6 +95,13 @@ void run_leader_mu(unsigned int node_id, const std::vector<Peer>& peers) {
 }
 
 void run_follower_mu(const unsigned int node_id, const rdma_cm_id* id) {
+    auto die_if_null = [&](const char* name, const void* p) {
+        if (!p) {
+            std::cerr << "[mu] " << name << " is null\n";
+            std::abort();
+        }
+    };
+
     const char msg[] = "hello from follower";
 
     const ibv_mr* send_mr = ibv_reg_mr(
@@ -303,6 +310,9 @@ void run_follower(const unsigned int node_id) {
     std::cout << "[follower " << node_id << "] connect event: " << event->event << "\n";
     rdma_ack_cm_event(event);
     std::cout << "[follower " << node_id << "] connected to leader\n";
+    if (id->pd == nullptr) {
+        std::cout << "The pd is null somehow!" << std::endl;
+    }
     run_follower_mu(node_id, id);
 }
 
