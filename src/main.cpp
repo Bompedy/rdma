@@ -136,7 +136,10 @@ void run_follower(const unsigned int node_id) {
 
     rdma_conn_param param{};
     param.private_data = &nid;
-    param.private_data_len = sizeof(nid);
+    param.private_data_len = sizeof(uint32_t);
+
+    std::cout << "[follower " << node_id << "] sending private_data_len="
+              << sizeof(uint32_t) << "\n";
 
     if (rdma_connect(id, &param)) {
         perror("rdma_connect");
