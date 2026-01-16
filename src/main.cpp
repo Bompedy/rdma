@@ -73,7 +73,13 @@ void run_leader_mu(unsigned int node_id, const std::vector<Peer>& peers) {
 
     while (true) {
         ibv_wc wc{};
-        while (ibv_poll_cq(any->qp->recv_cq, 1, &wc) == 0) {}
+        while (true) {
+            const auto polls = ibv_poll_cq(any->qp->recv_cq, 1, &wc);
+            if (polls != 0) {
+                std::cout << "Got polls: " << polls << std::endl; 
+                break;
+            }
+        }
 
         if (wc.status != IBV_WC_SUCCESS) {
             std::cerr << "[leader] WC error " << wc.status << "\n";
