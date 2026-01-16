@@ -1,9 +1,11 @@
+#include <chrono>
 #include <rdma/rdma_cma.h>
 #include <infiniband/verbs.h>
 #include <arpa/inet.h>
 #include <cstring>
 #include <iostream>
 #include <ranges>
+#include <thread>
 #include <unordered_map>
 #include <unistd.h>
 #include <vector>
@@ -95,6 +97,7 @@ void run_leader_mu(unsigned int node_id, const std::vector<Peer>& peers) {
 }
 
 void run_follower_mu(const unsigned int node_id, const rdma_cm_id* id) {
+    std::this_thread::sleep_for(std::chrono::seconds(5));
     auto die_if_null = [&](const char* name, const void* p) {
         if (!p) {
             std::cerr << "[mu] " << name << " is null\n";
@@ -127,11 +130,11 @@ void run_follower_mu(const unsigned int node_id, const rdma_cm_id* id) {
     send_sge.lkey   = send_mr->lkey;
 
     ibv_send_wr swr{};
-    swr.wr_id      = node_id;           // identify sender
+    swr.wr_id      = node_id;
     swr.sg_list    = &send_sge;
     swr.num_sge    = 1;
     swr.opcode     = IBV_WR_SEND;
-    swr.send_flags = IBV_SEND_SIGNALED; // get completion
+    swr.send_flags = IBV_SEND_SIGNALED;
 
     ibv_send_wr* sbad = nullptr;
     if (ibv_post_send(id->qp, &swr, &sbad))
