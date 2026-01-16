@@ -31,42 +31,44 @@ struct Peer {
 constexpr unsigned short RDMA_PORT = 6969;
 
 void run_leader_mu(unsigned int node_id, const std::vector<Peer>& peers) {
-    static char buf[4096];
+    // One buffer + MR per node_id
+    static char bufs[5][4096];
+    static ibv_mr* mrs[64] = {};
 
     const rdma_cm_id* any = nullptr;
     for (const auto& peer : peers) {
-        if (peer.id) {
-            any = peer.id;
-            break;
-        }
+        if (peer.id) { any = peer.id; break; }
     }
     if (!any) return;
 
-    const ibv_mr* mr = ibv_reg_mr(
-        any->pd,
-        buf,
-        sizeof(buf),
-        IBV_ACCESS_LOCAL_WRITE
-    );
-    if (!mr) throw std::runtime_error("ibv_reg_mr failed");
-
-    ibv_sge sge{};
-    sge.addr = reinterpret_cast<uintptr_t>(buf);
-    sge.length = sizeof(buf);
-    sge.lkey = mr->lkey;
-
+    // Register MRs once per node
     for (const auto& peer : peers) {
         if (!peer.id) continue;
+        const uint32_t nid = peer.node_id;
+
+        if (!mrs[nid]) {
+            mrs[nid] = ibv_reg_mr(
+                any->pd,
+                bufs[nid],
+                sizeof(bufs[nid]),
+                IBV_ACCESS_LOCAL_WRITE
+            );
+            if (!mrs[nid]) throw std::runtime_error("ibv_reg_mr failed");
+        }
+
+        ibv_sge sge{};
+        sge.addr   = reinterpret_cast<uintptr_t>(bufs[nid]);
+        sge.length = sizeof(bufs[nid]);
+        sge.lkey   = mrs[nid]->lkey;
 
         ibv_recv_wr rwr{};
-        rwr.wr_id = peer.node_id;
+        rwr.wr_id   = nid;
         rwr.sg_list = &sge;
         rwr.num_sge = 1;
 
         ibv_recv_wr* bad = nullptr;
-        if (ibv_post_recv(peer.id->qp, &rwr, &bad)) {
+        if (ibv_post_recv(peer.id->qp, &rwr, &bad))
             throw std::runtime_error("ibv_post_recv failed");
-        }
     }
 
     while (true) {
@@ -79,19 +81,31 @@ void run_leader_mu(unsigned int node_id, const std::vector<Peer>& peers) {
         }
 
         if (wc.opcode != IBV_WC_RECV) continue;
-        std::cout << "[leader] received " << wc.byte_len << " bytes from node " << wc.wr_id << "\n";
 
+        const uint32_t from = static_cast<uint32_t>(wc.wr_id);
+
+        std::cout << "[leader] received " << wc.byte_len
+                  << " bytes from node " << from << "\n";
+
+        // Re-post recv on that same peer's QP with that peer's buffer
         for (const auto& peer : peers) {
-            if (peer.id && peer.node_id == wc.wr_id) {
-                ibv_recv_wr rwr{};
-                rwr.wr_id = peer.node_id;
-                rwr.sg_list = &sge;
-                rwr.num_sge = 1;
+            if (!peer.id) continue;
+            if (peer.node_id != from) continue;
 
-                ibv_recv_wr* bad = nullptr;
-                if (ibv_post_recv(peer.id->qp, &rwr, &bad)) throw std::runtime_error("ibv_post_recv failed");
-                break;
-            }
+            ibv_sge sge{};
+            sge.addr   = reinterpret_cast<uintptr_t>(bufs[from]);
+            sge.length = sizeof(bufs[from]);
+            sge.lkey   = mrs[from]->lkey;
+
+            ibv_recv_wr rwr{};
+            rwr.wr_id   = from;
+            rwr.sg_list = &sge;
+            rwr.num_sge = 1;
+
+            ibv_recv_wr* bad = nullptr;
+            if (ibv_post_recv(peer.id->qp, &rwr, &bad))
+                throw std::runtime_error("ibv_post_recv failed");
+            break;
         }
     }
 }
@@ -145,6 +159,8 @@ void run_follower_mu(const unsigned int node_id, const rdma_cm_id* id) {
 
     if (swc.status != IBV_WC_SUCCESS)
         throw std::runtime_error("send failed");
+
+    std::cout << "[follower " << node_id << "] SEND completed\n";
 
     static char buf[4096];
     const ibv_mr* mr = ibv_reg_mr(
