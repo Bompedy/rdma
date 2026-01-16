@@ -69,7 +69,7 @@ void run_leader_mu(unsigned int node_id, const std::vector<Peer>& peers) {
 
     while (true) {
         ibv_wc wc{};
-        while (ibv_poll_cq(any->recv_cq, 1, &wc) == 0) {}
+        while (ibv_poll_cq(any->qp->recv_cq, 1, &wc) == 0) {}
 
         if (wc.status != IBV_WC_SUCCESS) {
             std::cerr << "[leader] WC error " << wc.status << "\n";
@@ -107,8 +107,9 @@ void run_follower_mu(const unsigned int node_id, const rdma_cm_id* id) {
     die_if_null("id->qp", id->qp);
     die_if_null("id->pd", id->pd);
     die_if_null("id->recv_cq", id->recv_cq);
-    // for send path:
     die_if_null("id->send_cq", id->send_cq);
+    die_if_null("id->qp->recv_cq", id->qp->recv_cq);
+    die_if_null("id->qp->send_cq", id->qp->send_cq);
 
     const char msg[] = "hello from follower";
 
@@ -137,7 +138,7 @@ void run_follower_mu(const unsigned int node_id, const rdma_cm_id* id) {
         throw std::runtime_error("ibv_post_send failed");
 
     ibv_wc swc{};
-    while (ibv_poll_cq(id->send_cq, 1, &swc) == 0) {}
+    while (ibv_poll_cq(id->qp->send_cq, 1, &swc) == 0) {}
 
     if (swc.status != IBV_WC_SUCCESS)
         throw std::runtime_error("send failed");
@@ -166,7 +167,7 @@ void run_follower_mu(const unsigned int node_id, const rdma_cm_id* id) {
 
     while (true) {
         ibv_wc wc{};
-        while (ibv_poll_cq(id->recv_cq, 1, &wc) == 0) {}
+        while (ibv_poll_cq(id->qp->recv_cq, 1, &wc) == 0) {}
 
         if (wc.status != IBV_WC_SUCCESS) {
             std::cerr << "[follower] WC error " << wc.status << "\n";
