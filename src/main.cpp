@@ -22,7 +22,7 @@ unsigned int get_node_id() {
 }
 
 struct Peer {
-    int node_id;
+    uint32_t node_id;
     rdma_cm_id* id;
     ibv_qp* qp;
 };
@@ -60,15 +60,17 @@ void run_leader(unsigned int node_id) {
         if (event->event == RDMA_CM_EVENT_CONNECT_REQUEST) {
             rdma_cm_id* id = event->id;
 
-            int remote_node = -1;
-            if (event->param.conn.private_data && event->param.conn.private_data_len == sizeof(int)) {
-                std::memcpy(&remote_node, event->param.conn.private_data, sizeof(int));
+            uint32_t remote = 0;
+            std::cout << "[leader] private_data_len=" << event->param.conn.private_data_len << "\n";
 
-                std::cout << "[leader] CONNECT_REQUEST from node_id="
-                   << remote_node << "\n";
-            } else {
-                std::cout << "[leader] CONNECT_REQUEST missing node_id, rejecting\n";
-                rdma_reject(id, nullptr, 0);
+            if (event->param.conn.private_data &&
+                event->param.conn.private_data_len == sizeof(remote)) {
+                std::memcpy(&remote, event->param.conn.private_data, sizeof(remote));
+                std::cout << "[leader] CONNECT_REQUEST from node_id=" << remote << "\n";
+            }
+            else {
+                std::cout << "[leader] CONNECT_REQUEST missing/invalid node_id, rejecting\n";
+                rdma_reject(event->id, nullptr, 0);
                 rdma_ack_cm_event(event);
                 continue;
             }
@@ -89,9 +91,9 @@ void run_leader(unsigned int node_id) {
             rdma_conn_param accept{};
             rdma_accept(id, &accept);
 
-            peers.emplace(remote_node, Peer{remote_node, id, id->qp});
+            peers.emplace(remote, Peer{remote, id, id->qp});
 
-            std::cout << "[leader] connected node " << remote_node << "\n";
+            std::cout << "[leader] connected node " << remote << "\n";
         }
 
         rdma_ack_cm_event(event);
@@ -130,12 +132,23 @@ void run_follower(const unsigned int node_id) {
 
     if (rdma_create_qp(id, nullptr, &qp_attr)) throw std::runtime_error("rdma_create_qp failed");
 
-    rdma_conn_param param{};
-    param.private_data = &node_id;
-    param.private_data_len = sizeof(node_id);
+    const auto nid = static_cast<uint32_t>(node_id);
 
-    rdma_connect(id, &param);
-    rdma_get_cm_event(ec, &event);
+    rdma_conn_param param{};
+    param.private_data = &nid;
+    param.private_data_len = sizeof(nid);
+
+    if (rdma_connect(id, &param)) {
+        perror("rdma_connect");
+        std::exit(1);
+    }
+
+    if (rdma_get_cm_event(ec, &event)) {
+        perror("rdma_get_cm_event(connect)");
+        std::exit(1);
+    }
+
+    std::cout << "[follower " << node_id << "] connect event: " << event->event << "\n";
     rdma_ack_cm_event(event);
 
     std::cout << "[follower " << node_id << "] connected to leader\n";
