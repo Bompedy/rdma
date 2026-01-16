@@ -30,10 +30,11 @@ struct Peer {
 constexpr unsigned short RDMA_PORT = 6969;
 
 void run_leader_mu(unsigned int node_id, const std::vector<Peer>& peers) {
-
+    pause();
 }
 
 void run_follower_mu(unsigned int node_id, const rdma_cm_id* id) {
+    pause();
 }
 
 void run_leader(const unsigned int node_id) {
