@@ -34,7 +34,6 @@ void run_leader_mu(unsigned int node_id, const std::vector<Peer>& peers) {
     const auto any = peers[1].id;
     static char buf[4096];
 
-
     const ibv_mr* mr = ibv_reg_mr(
         peers[1].id->pd,
         buf,
