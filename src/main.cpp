@@ -58,7 +58,7 @@ void run_leader(const unsigned int node_id) {
 
     size_t connected = 0;
     while (connected < expected) {
-        std::cout << connected << " connected\n"; 
+        std::cout << connected << " connected\n";
         rdma_cm_event* event = nullptr;
         if (rdma_get_cm_event(ec, &event)) {
             perror("rdma_get_cm_event");
@@ -83,12 +83,14 @@ void run_leader(const unsigned int node_id) {
         std::memcpy(&remote,event->param.conn.private_data, sizeof(uint32_t));
 
         if (remote >= peers.size() || remote == node_id) {
+            std::cout << "Rejecting!" << std::endl;
             rdma_reject(id, nullptr, 0);
             rdma_ack_cm_event(event);
             continue;
         }
 
         if (peers[remote].id != nullptr) {
+            std::cout << "Rejecting2!" << std::endl;
             rdma_reject(id, nullptr, 0);
             rdma_ack_cm_event(event);
             continue;
