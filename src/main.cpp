@@ -186,6 +186,8 @@ void run_leader(const unsigned int node_id) {
     ibv_cq* cq = ibv_create_cq(listener->verbs, 4096, nullptr, nullptr, 0);
     if (!cq) throw std::runtime_error("ibv_create_cq failed");
 
+    std::cout << "makes it here" << std::endl;
+
     // ibv_pd* pd = nullptr;
     // ibv_cq* cq = nullptr;
 
