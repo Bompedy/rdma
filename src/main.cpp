@@ -39,6 +39,8 @@ constexpr size_t TOTAL_POOL_SIZE = MAX_LOG_ENTRIES * ENTRY_SIZE;
 void run_leader_mu(unsigned int node_id, const std::vector<Peer>& peers, char* local_log, const ibv_mr* local_mr) {
     uint32_t log_index = 0;
     std::array<uint32_t, MAX_LOG_ENTRIES> acks{};
+    const uint32_t majority = peers.size() - 2;
+    const uint32_t commit_index = 0;
     constexpr uint32_t PIPE_DEPTH = 64;
     uint32_t active_pipes = 0;
 
@@ -77,10 +79,30 @@ void run_leader_mu(unsigned int node_id, const std::vector<Peer>& peers, char* l
         const int n = ibv_poll_cq(cq, 16, wc);
         for (int i = 0; i < n; ++i) {
             if (wc[i].status != IBV_WC_SUCCESS) continue;
-            if (const uint32_t acked_idx = wc[i].wr_id; ++acks[acked_idx] >= peers.size() - 2) {
+            if (const uint32_t acked_idx = wc[i].wr_id; ++acks[acked_idx] >= majority) {
                 std::cout << "Got majority for: " << acked_idx << "\n";
+
+                for (const auto& peer : peers) {
+                    if (!peer.id || peer.node_id == node_id) continue;
+
+                    char* status_byte_local = local_log + (acked_idx * ENTRY_SIZE) + (ENTRY_SIZE - 1);
+                    *status_byte_local = 1;
+
+                    ibv_sge sge_commit{reinterpret_cast<uintptr_t>(status_byte_local), 1, local_mr->lkey};
+
+                    ibv_send_wr swr_commit{}, *bad = nullptr;
+                    swr_commit.opcode = IBV_WR_RDMA_WRITE;
+                    swr_commit.sg_list = &sge_commit;
+                    swr_commit.num_sge = 1;
+                    swr_commit.send_flags = 0;
+
+                    // Target ONLY the status byte offset
+                    swr_commit.wr.rdma.remote_addr = peer.remote_log_base + (acked_idx * ENTRY_SIZE) + (ENTRY_SIZE - 1);
+                    swr_commit.wr.rdma.rkey = peer.remote_rkey;
+
+                    ibv_post_send(peer.id->qp, &swr_commit, &bad);
+                }
             }
-            // try to walk up here
         }
     }
 }
