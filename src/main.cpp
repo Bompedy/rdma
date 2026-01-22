@@ -51,15 +51,15 @@ std::array<std::array<ibv_sge, PIPE_DEPTH>, MAX_PEERS> COMMIT_SGES;
 ibv_send_wr* build_propose_wr(
     const uint32_t log_index,
     const Peer& peer,
-    char* local_log,
+    const char* local_log,
     const ibv_mr* mr,
     ibv_send_wr* next_wr
 ) {
     const uint32_t slot = log_index % PIPE_DEPTH;
     ibv_send_wr& swr = LOG_WRS[peer.node_id][slot];
-    ibv_sge& sge     = LOG_SGES[peer.node_id][slot];
+    ibv_sge& sge = LOG_SGES[peer.node_id][slot];
 
-    char* current_entry = local_log + (slot * ENTRY_SIZE);
+    const char* current_entry = local_log + (slot * ENTRY_SIZE);
     sge.addr = reinterpret_cast<uintptr_t>(current_entry);
     sge.length = ENTRY_SIZE;
     sge.lkey = mr->lkey;
@@ -76,7 +76,9 @@ ibv_send_wr* build_propose_wr(
     return &swr;
 }
 
-void run_leader_mu(unsigned int node_id, const std::vector<Peer>& peers, char* local_log, const ibv_mr* local_mr) {
+void run_leader_mu(
+    const unsigned int node_id,
+    const std::vector<Peer>& peers, char* local_log, const ibv_mr* local_mr) {
     std::array<uint32_t, MAX_LOG_ENTRIES> acks{};
     const uint32_t majority = peers.size() - 2;
 
@@ -86,11 +88,10 @@ void run_leader_mu(unsigned int node_id, const std::vector<Peer>& peers, char* l
         if (peer.node_id == node_id || !peer.id) continue;
 
         ibv_send_wr* head = nullptr;
+        ibv_send_wr* bad_wr;
         for (int i = PIPE_DEPTH - 1; i >= 0; --i) {
             head = build_propose_wr(i, peer, local_log, local_mr, head);
         }
-
-        ibv_send_wr* bad_wr;
         if (ibv_post_send(peer.id->qp, head, &bad_wr)) {
 
         }
