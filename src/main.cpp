@@ -35,43 +35,65 @@ constexpr uint16_t RDMA_PORT = 6969;
 constexpr size_t MAX_LOG_ENTRIES = 1000000;
 constexpr size_t ENTRY_SIZE = 1024;
 constexpr size_t TOTAL_POOL_SIZE = MAX_LOG_ENTRIES * ENTRY_SIZE;
+constexpr size_t COMMIT_INDEX_OFFSET = TOTAL_POOL_SIZE;
+constexpr size_t METADATA_SIZE = 4096;
+constexpr size_t FINAL_POOL_SIZE = TOTAL_POOL_SIZE + METADATA_SIZE;
+
+constexpr size_t PIPE_DEPTH = 64;
+constexpr size_t MAX_PEERS = 3;
+
+alignas(64) std::array<std::array<uint32_t, PIPE_DEPTH>, MAX_PEERS> COMMIT_VALUES;
+std::array<std::array<ibv_send_wr, PIPE_DEPTH>, MAX_PEERS> LOG_WRS;
+std::array<std::array<ibv_sge, PIPE_DEPTH>, MAX_PEERS> LOG_SGES;
+std::array<std::array<ibv_send_wr, PIPE_DEPTH>, MAX_PEERS> COMMIT_WRS;
+std::array<std::array<ibv_sge, PIPE_DEPTH>, MAX_PEERS> COMMIT_SGES;
+
+ibv_send_wr* build_propose_wr(
+    const uint32_t log_index,
+    const Peer& peer,
+    char* local_log,
+    const ibv_mr* mr,
+    ibv_send_wr* next_wr
+) {
+    const uint32_t slot = log_index % PIPE_DEPTH;
+    ibv_send_wr& swr = LOG_WRS[peer.node_id][slot];
+    ibv_sge& sge     = LOG_SGES[peer.node_id][slot];
+
+    char* current_entry = local_log + (slot * ENTRY_SIZE);
+    sge.addr = reinterpret_cast<uintptr_t>(current_entry);
+    sge.length = ENTRY_SIZE;
+    sge.lkey = mr->lkey;
+
+    swr.wr_id = log_index;
+    swr.opcode = IBV_WR_RDMA_WRITE;
+    swr.sg_list = &sge;
+    swr.num_sge = 1;
+    swr.send_flags = IBV_SEND_SIGNALED;
+    swr.next = next_wr;
+
+    swr.wr.rdma.remote_addr = peer.remote_log_base + (slot * ENTRY_SIZE);
+    swr.wr.rdma.rkey = peer.remote_rkey;
+    return &swr;
+}
 
 void run_leader_mu(unsigned int node_id, const std::vector<Peer>& peers, char* local_log, const ibv_mr* local_mr) {
-    uint32_t log_index = 0;
     std::array<uint32_t, MAX_LOG_ENTRIES> acks{};
     const uint32_t majority = peers.size() - 2;
-    const uint32_t commit_index = 0;
-    constexpr uint32_t PIPE_DEPTH = 64;
-    uint32_t active_pipes = 0;
 
     ibv_cq* cq = peers[1].id->qp->send_cq;
 
-    for (int i = 0; i < PIPE_DEPTH; i++) {
-        char* current_entry = local_log + (log_index * ENTRY_SIZE);
-        for (const auto& peer : peers) {
-            if (!peer.id || peer.node_id == node_id) continue;
+    for (const auto& peer : peers) {
+        if (peer.node_id == node_id || !peer.id) continue;
 
-            ibv_sge sge{};
-            sge.addr   = reinterpret_cast<uintptr_t>(current_entry);
-            sge.length = ENTRY_SIZE;
-            sge.lkey   = local_mr->lkey;
-
-            ibv_send_wr swr{}, *bad = nullptr;
-            swr.wr_id      = log_index;
-            swr.opcode     = IBV_WR_RDMA_WRITE;
-            swr.sg_list    = &sge;
-            swr.num_sge    = 1;
-            swr.send_flags = IBV_SEND_SIGNALED;
-
-            swr.wr.rdma.remote_addr = peer.remote_log_base + (log_index * ENTRY_SIZE);
-            swr.wr.rdma.rkey        = peer.remote_rkey;
-
-            if (ibv_post_send(peer.id->qp, &swr, &bad)) {
-                std::cerr << "Post send failed!\n";
-            }
+        ibv_send_wr* head = nullptr;
+        for (int i = PIPE_DEPTH - 1; i >= 0; --i) {
+            head = build_propose_wr(i, peer, local_log, local_mr, head);
         }
 
-        log_index = (log_index + 1) % MAX_LOG_ENTRIES;
+        ibv_send_wr* bad_wr;
+        if (ibv_post_send(peer.id->qp, head, &bad_wr)) {
+
+        }
     }
 
     ibv_wc wc[16];
@@ -81,45 +103,27 @@ void run_leader_mu(unsigned int node_id, const std::vector<Peer>& peers, char* l
             if (wc[i].status != IBV_WC_SUCCESS) continue;
             if (const uint32_t acked_idx = wc[i].wr_id; ++acks[acked_idx] >= majority) {
                 std::cout << "Got majority for: " << acked_idx << "\n";
-
-                for (const auto& peer : peers) {
-                    if (!peer.id || peer.node_id == node_id) continue;
-
-                    char* status_byte_local = local_log + (acked_idx * ENTRY_SIZE) + (ENTRY_SIZE - 1);
-                    *status_byte_local = 1;
-
-                    ibv_sge sge_commit{reinterpret_cast<uintptr_t>(status_byte_local), 1, local_mr->lkey};
-
-                    ibv_send_wr swr_commit{}, *bad = nullptr;
-                    swr_commit.opcode = IBV_WR_RDMA_WRITE;
-                    swr_commit.sg_list = &sge_commit;
-                    swr_commit.num_sge = 1;
-                    swr_commit.send_flags = 0;
-
-                    // Target ONLY the status byte offset
-                    swr_commit.wr.rdma.remote_addr = peer.remote_log_base + (acked_idx * ENTRY_SIZE) + (ENTRY_SIZE - 1);
-                    swr_commit.wr.rdma.rkey = peer.remote_rkey;
-
-                    ibv_post_send(peer.id->qp, &swr_commit, &bad);
-                }
             }
         }
     }
 }
 
-void run_follower_mu(const unsigned int node_id, const rdma_cm_id* id, const char* log_pool, const ibv_mr* mr) {
-    uint32_t log_index = 0;
+void run_follower_mu(const unsigned int node_id, const char* log_pool) {
+    uint32_t last_applied = 0;
+    const volatile auto* remote_commit_ptr = reinterpret_cast<const volatile uint32_t*>(log_pool + COMMIT_INDEX_OFFSET);
+
     while (true) {
-        const auto status_ptr = const_cast<volatile char*>(log_pool + (log_index * ENTRY_SIZE) + (ENTRY_SIZE - 1));
-        while (*status_ptr == 0) {}
+        if (const uint32_t current_commit = *remote_commit_ptr; current_commit > last_applied) {
+            std::atomic_thread_fence(std::memory_order_acquire);
+            for (uint32_t i = last_applied; i < current_commit; ++i) {
+                const uint32_t log_idx = i % MAX_LOG_ENTRIES;
+                const char* entry_data = log_pool + (log_idx * ENTRY_SIZE);
+                std::cout << "Applying index: " << log_idx << "\n";
+            }
 
-        std::atomic_thread_fence(std::memory_order_acquire);
-        const char* entry_data = log_pool + (log_index * ENTRY_SIZE);
-        std::cout << node_id << " " << "applied log index - " << log_index << "\n";
-        std::atomic_thread_fence(std::memory_order_release);
-        *status_ptr = 0;
-
-        log_index = (log_index + 1) % MAX_LOG_ENTRIES;
+            last_applied = current_commit;
+            std::atomic_thread_fence(std::memory_order_release);
+        }
     }
 }
 
@@ -216,11 +220,11 @@ void run_leader(const uint32_t node_id) {
         rdma_ack_cm_event(event);
     }
 
-    const auto log_pool = static_cast<char*>(aligned_alloc(4096, TOTAL_POOL_SIZE));
+    const auto log_pool = static_cast<char*>(aligned_alloc(4096, FINAL_POOL_SIZE));
     if (!log_pool) throw std::runtime_error("Failed to allocate log_pool");
-    memset(log_pool, 0, TOTAL_POOL_SIZE);
+    memset(log_pool, 0, FINAL_POOL_SIZE);
 
-    const ibv_mr* mr = ibv_reg_mr(pd, log_pool, TOTAL_POOL_SIZE, IBV_ACCESS_LOCAL_WRITE);
+    const ibv_mr* mr = ibv_reg_mr(pd, log_pool, FINAL_POOL_SIZE, IBV_ACCESS_LOCAL_WRITE);
     if (!mr) throw std::runtime_error("ibv_reg_mr failed");
 
     std::cout << "[leader] all nodes connected\n";
@@ -264,11 +268,11 @@ void run_follower(const unsigned int node_id) {
 
     if (rdma_create_qp(id, pd, &qp_attr)) throw std::runtime_error("rdma_create_qp failed");
 
-    const auto log_pool = static_cast<char*>(aligned_alloc(4096, TOTAL_POOL_SIZE));
+    const auto log_pool = static_cast<char*>(aligned_alloc(4096, FINAL_POOL_SIZE));
     if (!log_pool) throw std::runtime_error("Failed to allocate log_pool");
-    memset(log_pool, 0, TOTAL_POOL_SIZE);
+    memset(log_pool, 0, FINAL_POOL_SIZE);
 
-    const ibv_mr* mr = ibv_reg_mr(pd, log_pool, TOTAL_POOL_SIZE, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+    const ibv_mr* mr = ibv_reg_mr(pd, log_pool, FINAL_POOL_SIZE, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
     if (!mr) throw std::runtime_error("ibv_reg_mr failed");
 
     ConnPrivateData my_info{};
@@ -296,7 +300,7 @@ void run_follower(const unsigned int node_id) {
     if (id->pd == nullptr) {
         std::cout << "The pd is null somehow!" << std::endl;
     }
-    run_follower_mu(node_id, id, log_pool, mr);
+    run_follower_mu(node_id, log_pool);
 }
 
 int main() {
