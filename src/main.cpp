@@ -147,8 +147,8 @@ void run_leader_sequential(
             ibv_send_wr* bad_wr;
 
             const uint32_t slot = current_index % MAX_LOG_ENTRIES;
-            ibv_send_wr& swr = LOG_WRS[peer.node_id][slot];
-            ibv_sge& sge = LOG_SGES[peer.node_id][slot];
+            ibv_send_wr& swr = LOG_WRS[peer.node_id][0];
+            ibv_sge& sge = LOG_SGES[peer.node_id][0];
 
             const_cast<char*>(local_log + (slot * ENTRY_SIZE))[ENTRY_SIZE - 1] = 1;
 
