@@ -33,7 +33,7 @@ struct Peer {
 constexpr uint16_t RDMA_PORT = 6969;
 
 constexpr size_t MAX_LOG_ENTRIES = 1000000;
-constexpr size_t ENTRY_SIZE = 1024;
+constexpr size_t ENTRY_SIZE = 64;
 constexpr size_t TOTAL_POOL_SIZE = MAX_LOG_ENTRIES * ENTRY_SIZE;
 constexpr size_t COMMIT_INDEX_OFFSET = TOTAL_POOL_SIZE;
 constexpr size_t METADATA_SIZE = 4096;
@@ -201,30 +201,21 @@ void run_leader_sequential(
             }
         }
 
+
         while (acks_received < majority) {
-            ibv_wc wc;
-            // Polling 1 at a time is often faster for strictly sequential
-            if (ibv_poll_cq(cq, 1, &wc) > 0) {
-                if (wc.status == IBV_WC_SUCCESS && wc.wr_id == current_index) {
+            ibv_wc wc[16];
+            const int n = ibv_poll_cq(cq, 16, wc);
+
+            for (int i = 0; i < n; ++i) {
+                if (wc[i].status != IBV_WC_SUCCESS) {
+                    continue;
+                }
+
+                if (wc[i].wr_id == current_index) {
                     acks_received++;
                 }
             }
         }
-
-        // while (acks_received < majority) {
-        //     ibv_wc wc[16];
-        //     const int n = ibv_poll_cq(cq, 16, wc);
-        //
-        //     for (int i = 0; i < n; ++i) {
-        //         if (wc[i].status != IBV_WC_SUCCESS) {
-        //             continue;
-        //         }
-        //
-        //         if (wc[i].wr_id == current_index) {
-        //             acks_received++;
-        //         }
-        //     }
-        // }
 
         ++current_index;
 
