@@ -204,7 +204,6 @@ void run_follower_sequential(const unsigned int node_id, char* log_pool) {
         while (*ready_flag != 1) {}
         std::atomic_thread_fence(std::memory_order_acquire);
         const char* entry_data = log_pool + (slot * ENTRY_SIZE);
-        std::cout << "Applying index: " << current_index << "\n";
         *ready_flag = 0;
         current_index++;
 
