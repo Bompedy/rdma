@@ -200,7 +200,7 @@ void run_leader_sequential(
             swr.opcode = IBV_WR_RDMA_WRITE;
             swr.sg_list = &sge;
             swr.num_sge = 1;
-            swr.send_flags = IBV_SEND_SIGNALED;
+            swr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
             swr.wr.rdma.remote_addr = peer.remote_log_base + (slot * ENTRY_SIZE);
             swr.wr.rdma.rkey = peer.remote_rkey;
 
