@@ -135,7 +135,7 @@ void run_leader_sequential(
     const ibv_mr* local_mr
 ) {
     const uint32_t majority = peers.size() - 2;
-    ibv_cq* cq = peers[0].id->qp->send_cq;
+    ibv_cq* cq = peers[1].id->qp->send_cq;
     uint32_t current_index = 0;
 
     while (true) {
