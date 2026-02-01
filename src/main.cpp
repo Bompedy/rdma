@@ -128,6 +128,32 @@ void run_follower_mu(const unsigned int node_id, const char* log_pool) {
     }
 }
 
+std::atomic<uint64_t> global_ops_count{0};
+void monitor_performance() {
+    auto last_time = std::chrono::steady_clock::now();
+    uint64_t last_count = 0;
+
+    while (true) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+
+        auto now = std::chrono::steady_clock::now();
+        uint64_t current_count = global_ops_count.load(std::memory_order_relaxed);
+
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(now - last_time).count();
+        uint64_t delta_ops = current_count - last_count;
+
+        double ops_per_sec = (static_cast<double>(delta_ops) / duration) * 1000000.0;
+        double ops_per_us = static_cast<double>(delta_ops) / duration;
+
+        std::cout << "[Monitor] " << delta_ops << " ops in last second | "
+                  << ops_per_sec << " ops/sec | "
+                  << ops_per_us << " ops/µs" << std::endl;
+
+        last_count = current_count;
+        last_time = now;
+    }
+}
+
 void run_leader_sequential(
     const unsigned int node_id,
     const std::vector<Peer>& peers,
@@ -188,9 +214,10 @@ void run_leader_sequential(
 
         ++current_index;
 
-        if (current_index % MAX_LOG_ENTRIES == 0) {
-            std::cout << "[Leader] Completed full log cycles (" << current_index << " total entries)" << std::endl;
-        }
+        global_ops_count.fetch_add(1, std::memory_order_relaxed);
+        // if (current_index % MAX_LOG_ENTRIES == 0) {
+        //     std::cout << "[Leader] Completed full log cycles (" << current_index << " total entries)" << std::endl;
+        // }
     }
 }
 
