@@ -141,6 +141,7 @@ void run_leader_sequential(
     while (true) {
         uint32_t acks_received = 0;
 
+        std::cout << "Sending out: " << current_index << " - " << (current_index % MAX_LOG_ENTRIES) << "\n";
         for (const auto& peer : peers) {
             if (peer.node_id == node_id || !peer.id) continue;
             ibv_send_wr* bad_wr;
@@ -148,6 +149,8 @@ void run_leader_sequential(
             const uint32_t slot = current_index % MAX_LOG_ENTRIES;
             ibv_send_wr& swr = LOG_WRS[peer.node_id][slot];
             ibv_sge& sge = LOG_SGES[peer.node_id][slot];
+
+            const_cast<char*>(local_log + (slot * ENTRY_SIZE))[ENTRY_SIZE - 1] = 1;
 
             const char* current_entry = local_log + (slot * ENTRY_SIZE);
             sge.addr = reinterpret_cast<uintptr_t>(current_entry);
