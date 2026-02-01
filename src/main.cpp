@@ -114,17 +114,17 @@ void run_follower_mu(const unsigned int node_id, const char* log_pool) {
     const volatile auto* remote_commit_ptr = reinterpret_cast<const volatile uint32_t*>(log_pool + COMMIT_INDEX_OFFSET);
 
     while (true) {
-        if (const uint32_t current_commit = *remote_commit_ptr; current_commit > last_applied) {
-            std::atomic_thread_fence(std::memory_order_acquire);
-            for (uint32_t i = last_applied; i < current_commit; ++i) {
-                const uint32_t log_idx = i % MAX_LOG_ENTRIES;
-                const char* entry_data = log_pool + (log_idx * ENTRY_SIZE);
-                std::cout << "Applying index: " << log_idx << "\n";
-            }
-
-            last_applied = current_commit;
-            std::atomic_thread_fence(std::memory_order_release);
-        }
+        // if (const uint32_t current_commit = *remote_commit_ptr; current_commit > last_applied) {
+        //     std::atomic_thread_fence(std::memory_order_acquire);
+        //     for (uint32_t i = last_applied; i < current_commit; ++i) {
+        //         const uint32_t log_idx = i % MAX_LOG_ENTRIES;
+        //         const char* entry_data = log_pool + (log_idx * ENTRY_SIZE);
+        //         std::cout << "Applying index: " << log_idx << "\n";
+        //     }
+        //
+        //     last_applied = current_commit;
+        //     std::atomic_thread_fence(std::memory_order_release);
+        // }
     }
 }
 
