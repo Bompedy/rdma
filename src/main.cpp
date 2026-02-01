@@ -175,6 +175,7 @@ void run_follower_sequential(const unsigned int node_id, char* log_pool) {
     while (true) {
         const uint32_t slot = current_index % MAX_LOG_ENTRIES;
         volatile char* ready_flag = log_pool + (slot * ENTRY_SIZE) + (ENTRY_SIZE - 1);
+        std::cout << "Waiting for slot: " << slot << "\n";
         while (*ready_flag != 1) {}
         std::atomic_thread_fence(std::memory_order_acquire);
         const char* entry_data = log_pool + (slot * ENTRY_SIZE);
