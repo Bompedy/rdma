@@ -129,27 +129,36 @@ void run_follower_mu(const unsigned int node_id, const char* log_pool) {
 }
 
 std::atomic<uint64_t> global_ops_count{0};
+std::atomic<uint64_t> global_total_latency_ns{0};
+std::atomic<uint64_t> last_op_latency_ns{0};
+
+
 void monitor_performance() {
     auto last_time = std::chrono::steady_clock::now();
     uint64_t last_count = 0;
+    uint64_t last_latency_sum = 0;
 
     while (true) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
-
         auto now = std::chrono::steady_clock::now();
+
         uint64_t current_count = global_ops_count.load(std::memory_order_relaxed);
+        uint64_t current_latency_sum = global_total_latency_ns.load(std::memory_order_relaxed);
 
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(now - last_time).count();
         uint64_t delta_ops = current_count - last_count;
+        uint64_t delta_latency = current_latency_sum - last_latency_sum;
 
-        double ops_per_sec = (static_cast<double>(delta_ops) / duration) * 1000000.0;
-        double ops_per_us = static_cast<double>(delta_ops) / duration;
+        if (delta_ops > 0) {
+            double avg_us = (static_cast<double>(delta_latency) / delta_ops) / 1000.0;
+            double cur_us = static_cast<double>(last_op_latency_ns.load()) / 1000.0;
 
-        std::cout << "[Monitor] " << delta_ops << " ops in last second | "
-                  << ops_per_sec << " ops/sec | "
-                  << ops_per_us << " ops/µs" << std::endl;
+            std::cout << "[Monitor] " << delta_ops << " ops/sec | "
+                      << "Avg Latency: " << avg_us << " us | "
+                      << "Last Op: " << cur_us << " us" << std::endl;
+        }
 
         last_count = current_count;
+        last_latency_sum = current_latency_sum;
         last_time = now;
     }
 }
@@ -160,29 +169,30 @@ void run_leader_sequential(
     const char* local_log,
     const ibv_mr* local_mr
 ) {
-    std::thread t([]() {
-        monitor_performance();
-    });
+    std::thread t(monitor_performance);
     t.detach();
+
     const uint32_t majority = peers.size() - 2;
     ibv_cq* cq = peers[1].id->qp->send_cq;
     uint32_t current_index = 0;
 
     while (true) {
+        // --- START MEASUREMENT ---
+        auto start = std::chrono::high_resolution_clock::now();
+
         uint32_t acks_received = 0;
+        const uint32_t slot = current_index % MAX_LOG_ENTRIES;
 
         for (const auto& peer : peers) {
             if (peer.node_id == node_id || !peer.id) continue;
-            ibv_send_wr* bad_wr;
 
-            const uint32_t slot = current_index % MAX_LOG_ENTRIES;
+            // Prepare WR
             ibv_send_wr& swr = LOG_WRS[peer.node_id][0];
             ibv_sge& sge = LOG_SGES[peer.node_id][0];
 
             const_cast<char*>(local_log + (slot * ENTRY_SIZE))[ENTRY_SIZE - 1] = 1;
 
-            const char* current_entry = local_log + (slot * ENTRY_SIZE);
-            sge.addr = reinterpret_cast<uintptr_t>(current_entry);
+            sge.addr = reinterpret_cast<uintptr_t>(local_log + (slot * ENTRY_SIZE));
             sge.length = ENTRY_SIZE;
             sge.lkey = local_mr->lkey;
 
@@ -191,38 +201,34 @@ void run_leader_sequential(
             swr.sg_list = &sge;
             swr.num_sge = 1;
             swr.send_flags = IBV_SEND_SIGNALED;
-            swr.next = nullptr;
-
             swr.wr.rdma.remote_addr = peer.remote_log_base + (slot * ENTRY_SIZE);
             swr.wr.rdma.rkey = peer.remote_rkey;
 
-            if (ibv_post_send(peer.id->qp, &swr, &bad_wr)) {
-                throw std::runtime_error("Failed to post send");
-            }
+            ibv_send_wr* bad_wr;
+            ibv_post_send(peer.id->qp, &swr, &bad_wr);
         }
 
-
+        // Wait for hardware to confirm majority
         while (acks_received < majority) {
             ibv_wc wc[16];
-            const int n = ibv_poll_cq(cq, 16, wc);
-
+            int n = ibv_poll_cq(cq, 16, wc);
             for (int i = 0; i < n; ++i) {
-                if (wc[i].status != IBV_WC_SUCCESS) {
-                    continue;
-                }
-
-                if (wc[i].wr_id == current_index) {
+                if (wc[i].status == IBV_WC_SUCCESS && wc[i].wr_id == current_index) {
                     acks_received++;
                 }
             }
         }
 
-        ++current_index;
+        // --- END MEASUREMENT ---
+        auto end = std::chrono::high_resolution_clock::now();
+        uint64_t lat = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
 
+        // Update atomics
+        last_op_latency_ns.store(lat, std::memory_order_relaxed);
+        global_total_latency_ns.fetch_add(lat, std::memory_order_relaxed);
         global_ops_count.fetch_add(1, std::memory_order_relaxed);
-        // if (current_index % MAX_LOG_ENTRIES == 0) {
-        //     std::cout << "[Leader] Completed full log cycles (" << current_index << " total entries)" << std::endl;
-        // }
+
+        current_index++;
     }
 }
 
