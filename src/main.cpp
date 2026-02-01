@@ -144,8 +144,28 @@ void run_leader_sequential(
         for (const auto& peer : peers) {
             if (peer.node_id == node_id || !peer.id) continue;
             ibv_send_wr* bad_wr;
-            if (ibv_send_wr* wr = build_propose_wr(current_index, peer, local_log, local_mr, nullptr); ibv_post_send(peer.id->qp, wr, &bad_wr)) {
-                std::cerr << "Failed to post send for node " << peer.node_id << std::endl;
+
+            const uint32_t slot = current_index % MAX_LOG_ENTRIES;
+            ibv_send_wr& swr = LOG_WRS[peer.node_id][slot];
+            ibv_sge& sge = LOG_SGES[peer.node_id][slot];
+
+            const char* current_entry = local_log + (slot * ENTRY_SIZE);
+            sge.addr = reinterpret_cast<uintptr_t>(current_entry);
+            sge.length = ENTRY_SIZE;
+            sge.lkey = local_mr->lkey;
+
+            swr.wr_id = current_index;
+            swr.opcode = IBV_WR_RDMA_WRITE;
+            swr.sg_list = &sge;
+            swr.num_sge = 1;
+            swr.send_flags = IBV_SEND_SIGNALED;
+            swr.next = nullptr;
+
+            swr.wr.rdma.remote_addr = peer.remote_log_base + (slot * ENTRY_SIZE);
+            swr.wr.rdma.rkey = peer.remote_rkey;
+
+            if (ibv_post_send(peer.id->qp, &swr, &bad_wr)) {
+                throw std::runtime_error("Failed to post send");
             }
         }
 
