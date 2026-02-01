@@ -128,6 +128,62 @@ void run_follower_mu(const unsigned int node_id, const char* log_pool) {
     }
 }
 
+void run_leader_sequential(
+    const unsigned int node_id,
+    const std::vector<Peer>& peers,
+    const char* local_log,
+    const ibv_mr* local_mr
+) {
+    const uint32_t majority = peers.size() - 2;
+    ibv_cq* cq = peers[0].id->qp->send_cq;
+    uint32_t current_index = 0;
+
+    while (true) {
+        uint32_t acks_received = 0;
+
+        for (const auto& peer : peers) {
+            if (peer.node_id == node_id || !peer.id) continue;
+            ibv_send_wr* bad_wr;
+            if (ibv_send_wr* wr = build_propose_wr(current_index, peer, local_log, local_mr, nullptr); ibv_post_send(peer.id->qp, wr, &bad_wr)) {
+                std::cerr << "Failed to post send for node " << peer.node_id << std::endl;
+            }
+        }
+
+        while (acks_received < majority) {
+            ibv_wc wc[16];
+            const int n = ibv_poll_cq(cq, 16, wc);
+
+            for (int i = 0; i < n; ++i) {
+                if (wc[i].status != IBV_WC_SUCCESS) {
+                    continue;
+                }
+
+                if (wc[i].wr_id == current_index) {
+                    acks_received++;
+                }
+            }
+        }
+
+        std::cout << "Successfully committed index: " << current_index << "\n";
+        ++current_index;
+    }
+}
+
+void run_follower_sequential(const unsigned int node_id, char* log_pool) {
+    uint32_t current_index = 0;
+
+    while (true) {
+        const uint32_t slot = current_index % MAX_LOG_ENTRIES;
+        volatile char* ready_flag = log_pool + (slot * ENTRY_SIZE) + (ENTRY_SIZE - 1);
+        while (*ready_flag != 1) {}
+        std::atomic_thread_fence(std::memory_order_acquire);
+        const char* entry_data = log_pool + (slot * ENTRY_SIZE);
+        std::cout << "Applying index: " << current_index << "\n";
+        *ready_flag = 0;
+        current_index++;
+    }
+}
+
 struct ConnPrivateData {
     uintptr_t addr;
     uint32_t rkey;
@@ -229,7 +285,7 @@ void run_leader(const uint32_t node_id) {
     if (!mr) throw std::runtime_error("ibv_reg_mr failed");
 
     std::cout << "[leader] all nodes connected\n";
-    run_leader_mu(node_id, peers, log_pool, mr);
+    run_leader_sequential(node_id, peers, log_pool, mr);
 }
 
 
@@ -301,7 +357,7 @@ void run_follower(const unsigned int node_id) {
     if (id->pd == nullptr) {
         std::cout << "The pd is null somehow!" << std::endl;
     }
-    run_follower_mu(node_id, log_pool);
+    run_follower_sequential(node_id, log_pool);
 }
 
 int main() {
