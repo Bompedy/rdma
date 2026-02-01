@@ -187,8 +187,11 @@ void run_leader_sequential(
             }
         }
 
-        std::cout << "Successfully committed index: " << current_index << "\n";
         ++current_index;
+
+        if (current_index % MAX_LOG_ENTRIES == 0) {
+            std::cout << "[Leader] Completed full log cycles (" << current_index << " total entries)" << std::endl;
+        }
     }
 }
 
@@ -198,13 +201,16 @@ void run_follower_sequential(const unsigned int node_id, char* log_pool) {
     while (true) {
         const uint32_t slot = current_index % MAX_LOG_ENTRIES;
         volatile char* ready_flag = log_pool + (slot * ENTRY_SIZE) + (ENTRY_SIZE - 1);
-        std::cout << "Waiting for slot: " << slot << "\n";
         while (*ready_flag != 1) {}
         std::atomic_thread_fence(std::memory_order_acquire);
         const char* entry_data = log_pool + (slot * ENTRY_SIZE);
         std::cout << "Applying index: " << current_index << "\n";
         *ready_flag = 0;
         current_index++;
+
+        if (current_index % MAX_LOG_ENTRIES == 0) {
+            std::cout << "[Leader] Completed full log cycles (" << current_index << " total entries)" << std::endl;
+        }
     }
 }
 
