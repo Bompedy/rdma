@@ -160,7 +160,10 @@ void run_leader_sequential(
     const char* local_log,
     const ibv_mr* local_mr
 ) {
-    monitor_performance();
+    std::thread t([]() {
+        monitor_performance();
+    });
+    t.detach();
     const uint32_t majority = peers.size() - 2;
     ibv_cq* cq = peers[1].id->qp->send_cq;
     uint32_t current_index = 0;
