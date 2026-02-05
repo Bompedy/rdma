@@ -365,19 +365,33 @@ void run_follower(const unsigned int node_id) {
     addr.sin_family = AF_INET;
     addr.sin_port = htons(RDMA_PORT);
     inet_pton(AF_INET, CLUSTER_NODES[0].c_str(), &addr.sin_addr);
+
     if (!ec) throw std::runtime_error("rdma_create_event_channel failed");
     if (rdma_create_id(ec, &id, nullptr, RDMA_PS_TCP)) throw std::runtime_error("rdma_create_id failed");
 
-    rdma_resolve_addr(id, nullptr, reinterpret_cast<sockaddr*>(&addr), 2000);
     rdma_cm_event* event = nullptr;
+
+    if (rdma_resolve_addr(id, nullptr, reinterpret_cast<sockaddr*>(&addr), 2000)) throw std::runtime_error("rdma_resolve_addr failed");
     rdma_get_cm_event(ec, &event);
+    if (event->event != RDMA_CM_EVENT_ADDR_RESOLVED) {
+        std::cerr << "ADDR_RESOLVE failed. Check if ib0 IPs match. Event: " << event->event << std::endl;
+        exit(1);
+    }
     rdma_ack_cm_event(event);
-    rdma_resolve_route(id, 2000);
+
+    if (rdma_resolve_route(id, 2000)) throw std::runtime_error("rdma_resolve_route failed");
     rdma_get_cm_event(ec, &event);
+    if (event->event != RDMA_CM_EVENT_ROUTE_RESOLVED) {
+        std::cerr << "ROUTE_RESOLVE failed. Is Subnet Manager (opensm) running?" << std::endl;
+        exit(1);
+    }
     rdma_ack_cm_event(event);
+
+    if (!id->verbs) throw std::runtime_error("id->verbs is NULL! The RDMA device was not found.");
 
     ibv_pd* pd = ibv_alloc_pd(id->verbs);
     if (!pd) throw std::runtime_error("ibv_alloc_pd failed");
+
     ibv_cq* cq = ibv_create_cq(id->verbs, 256, nullptr, nullptr, 0);
     if (!cq) throw std::runtime_error("ibv_create_cq failed");
 
@@ -389,6 +403,7 @@ void run_follower(const unsigned int node_id) {
     qp_attr.cap.max_recv_wr = 128;
     qp_attr.cap.max_send_sge = 1;
     qp_attr.cap.max_recv_sge = 1;
+    qp_attr.cap.max_inline_data = 16;
 
     if (rdma_create_qp(id, pd, &qp_attr)) throw std::runtime_error("rdma_create_qp failed");
 
@@ -407,27 +422,28 @@ void run_follower(const unsigned int node_id) {
     rdma_conn_param param{};
     param.private_data = &my_info;
     param.private_data_len = sizeof(my_info);
+    param.responder_resources = 1;
+    param.initiator_depth = 1;
 
     if (rdma_connect(id, &param)) {
         perror("rdma_connect");
         std::exit(1);
     }
 
-    std::cout << "Connected called" << std::endl;
-
     if (rdma_get_cm_event(ec, &event)) {
         perror("rdma_get_cm_event(connect)");
         std::exit(1);
     }
 
-    std::cout << "Get cm event" << std::endl;
-    std::cout << "[follower " << node_id << "] connect event: " << event->event << "\n";
-    rdma_ack_cm_event(event);
-    std::cout << "[follower " << node_id << "] connected to leader\n";
-
-    if (id->pd == nullptr) {
-        std::cout << "The pd is null somehow!" << std::endl;
+    if (event->event != RDMA_CM_EVENT_ESTABLISHED) {
+        std::cerr << "Connection NOT established. Event: " << event->event << std::endl;
+        rdma_ack_cm_event(event);
+        exit(1);
     }
+
+    std::cout << "[follower " << node_id << "] Connected and Established!\n";
+    rdma_ack_cm_event(event);
+
     run_follower_sequential(node_id, log_pool);
 }
 
