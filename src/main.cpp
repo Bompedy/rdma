@@ -413,14 +413,18 @@ void run_follower(const unsigned int node_id) {
         std::exit(1);
     }
 
+    std::cout << "Connected called" << std::endl;
+
     if (rdma_get_cm_event(ec, &event)) {
         perror("rdma_get_cm_event(connect)");
         std::exit(1);
     }
 
+    std::cout << "Get cm event" << std::endl;
     std::cout << "[follower " << node_id << "] connect event: " << event->event << "\n";
     rdma_ack_cm_event(event);
     std::cout << "[follower " << node_id << "] connected to leader\n";
+
     if (id->pd == nullptr) {
         std::cout << "The pd is null somehow!" << std::endl;
     }
