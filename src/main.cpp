@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <vector>
 #include <netinet/in.h>
+#include <x86intrin.h>
 
 const std::vector<std::string> CLUSTER_NODES = {
     "192.168.1.1",
@@ -209,14 +210,23 @@ void run_leader_sequential(
         }
 
         // Wait for hardware to confirm majority
-        while (acks_received < majority) {
-            ibv_wc wc[16];
-            int n = ibv_poll_cq(cq, 16, wc);
-            for (int i = 0; i < n; ++i) {
-                if (wc[i].status == IBV_WC_SUCCESS && wc[i].wr_id == current_index) {
-                    acks_received++;
-                }
+        // while (acks_received < majority) {
+        //     ibv_wc wc[16];
+        //     int n = ibv_poll_cq(cq, 16, wc);
+        //     for (int i = 0; i < n; ++i) {
+        //         if (wc[i].status == IBV_WC_SUCCESS && wc[i].wr_id == current_index) {
+        //             acks_received++;
+        //         }
+        //     }
+        // }
+
+        int acks = 0;
+        while (acks < majority) {
+            ibv_wc wc{};
+            if (ibv_poll_cq(cq, 1, &wc) > 0) { // Poll 1 at a time for lowest latency
+                if (wc.status == IBV_WC_SUCCESS) acks++;
             }
+            // Optional: _mm_pause();
         }
 
         // --- END MEASUREMENT ---
@@ -449,6 +459,11 @@ void run_follower(const unsigned int node_id) {
 
 int main() {
     try {
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(1, &cpuset); // Pin to Core 1
+        pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+
         const unsigned int node_id = get_node_id();
         if (node_id == 0) run_leader(node_id);
         else run_follower(node_id);
