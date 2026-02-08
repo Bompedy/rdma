@@ -12,9 +12,9 @@
 #include <netinet/in.h>
 
 const std::vector<std::string> CLUSTER_NODES = {
-    "10.10.1.1",
-    "10.10.1.2",
-    "10.10.1.3",
+    "192.168.1.1",
+    "192.168.1.2",
+    "192.168.1.3",
 };
 
 unsigned int get_node_id() {
@@ -172,7 +172,7 @@ void run_leader_sequential(
     std::thread t(monitor_performance);
     t.detach();
 
-    const uint32_t majority = peers.size() - 2;
+    const uint32_t majority = peers.size() - 1;
     ibv_cq* cq = peers[1].id->qp->send_cq;
     uint32_t current_index = 0;
 
