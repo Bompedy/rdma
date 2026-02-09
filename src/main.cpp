@@ -44,46 +44,50 @@ constexpr uint16_t RDMA_PORT = 6969;
 constexpr size_t MAX_LOG_ENTRIES = 1000000;
 constexpr size_t ENTRY_SIZE = 8;
 constexpr size_t TOTAL_POOL_SIZE = MAX_LOG_ENTRIES * ENTRY_SIZE;
-constexpr size_t COMMIT_INDEX_OFFSET = TOTAL_POOL_SIZE;
+// constexpr size_t COMMIT_INDEX_OFFSET = TOTAL_POOL_SIZE;
 constexpr size_t METADATA_SIZE = 4096;
 constexpr size_t FINAL_POOL_SIZE = TOTAL_POOL_SIZE + METADATA_SIZE;
+constexpr size_t NUM_OPS = 1000;
+constexpr size_t NUM_CLIENTS = 1;
+constexpr size_t HUGE_PAGE_SIZE = 2 * 1024 * 1024;
+constexpr size_t ALIGNED_SIZE = ((FINAL_POOL_SIZE + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE) * HUGE_PAGE_SIZE;
+//
+// constexpr size_t PIPE_DEPTH = 64;
+// constexpr size_t MAX_PEERS = 3;
+//
+// alignas(64) std::array<std::array<uint32_t, PIPE_DEPTH>, MAX_PEERS> COMMIT_VALUES;
+// std::array<std::array<ibv_send_wr, PIPE_DEPTH>, MAX_PEERS> LOG_WRS;
+// std::array<std::array<ibv_sge, PIPE_DEPTH>, MAX_PEERS> LOG_SGES;
+// std::array<std::array<ibv_send_wr, PIPE_DEPTH>, MAX_PEERS> COMMIT_WRS;
+// std::array<std::array<ibv_sge, PIPE_DEPTH>, MAX_PEERS> COMMIT_SGES;
 
-constexpr size_t PIPE_DEPTH = 64;
-constexpr size_t MAX_PEERS = 3;
-
-alignas(64) std::array<std::array<uint32_t, PIPE_DEPTH>, MAX_PEERS> COMMIT_VALUES;
-std::array<std::array<ibv_send_wr, PIPE_DEPTH>, MAX_PEERS> LOG_WRS;
-std::array<std::array<ibv_sge, PIPE_DEPTH>, MAX_PEERS> LOG_SGES;
-std::array<std::array<ibv_send_wr, PIPE_DEPTH>, MAX_PEERS> COMMIT_WRS;
-std::array<std::array<ibv_sge, PIPE_DEPTH>, MAX_PEERS> COMMIT_SGES;
-
-ibv_send_wr* build_propose_wr(
-    const uint32_t log_index,
-    const Peer& peer,
-    const char* local_log,
-    const ibv_mr* mr,
-    ibv_send_wr* next_wr
-) {
-    const uint32_t slot = log_index % PIPE_DEPTH;
-    ibv_send_wr& swr = LOG_WRS[peer.node_id][slot];
-    ibv_sge& sge = LOG_SGES[peer.node_id][slot];
-
-    const char* current_entry = local_log + (slot * ENTRY_SIZE);
-    sge.addr = reinterpret_cast<uintptr_t>(current_entry);
-    sge.length = ENTRY_SIZE;
-    sge.lkey = mr->lkey;
-
-    swr.wr_id = log_index;
-    swr.opcode = IBV_WR_RDMA_WRITE;
-    swr.sg_list = &sge;
-    swr.num_sge = 1;
-    swr.send_flags = IBV_SEND_SIGNALED;
-    swr.next = next_wr;
-
-    swr.wr.rdma.remote_addr = peer.remote_log_base + (slot * ENTRY_SIZE);
-    swr.wr.rdma.rkey = peer.remote_rkey;
-    return &swr;
-}
+// ibv_send_wr* build_propose_wr(
+//     const uint32_t log_index,
+//     const Peer& peer,
+//     const char* local_log,
+//     const ibv_mr* mr,
+//     ibv_send_wr* next_wr
+// ) {
+//     const uint32_t slot = log_index % PIPE_DEPTH;
+//     ibv_send_wr& swr = LOG_WRS[peer.node_id][slot];
+//     ibv_sge& sge = LOG_SGES[peer.node_id][slot];
+//
+//     const char* current_entry = local_log + (slot * ENTRY_SIZE);
+//     sge.addr = reinterpret_cast<uintptr_t>(current_entry);
+//     sge.length = ENTRY_SIZE;
+//     sge.lkey = mr->lkey;
+//
+//     swr.wr_id = log_index;
+//     swr.opcode = IBV_WR_RDMA_WRITE;
+//     swr.sg_list = &sge;
+//     swr.num_sge = 1;
+//     swr.send_flags = IBV_SEND_SIGNALED;
+//     swr.next = next_wr;
+//
+//     swr.wr.rdma.remote_addr = peer.remote_log_base + (slot * ENTRY_SIZE);
+//     swr.wr.rdma.rkey = peer.remote_rkey;
+//     return &swr;
+// }
 
 void run_leader_sequential(
     const unsigned int node_id,
@@ -101,8 +105,8 @@ void run_leader_sequential(
         for (const auto& peer : peers) {
             if (peer.node_id == node_id || !peer.id) continue;
 
-            ibv_send_wr& swr = LOG_WRS[peer.node_id][0];
-            ibv_sge& sge = LOG_SGES[peer.node_id][0];
+            ibv_send_wr swr {};
+            ibv_sge sge {};
 
             const_cast<char*>(local_log + (slot * ENTRY_SIZE))[ENTRY_SIZE - 1] = 1;
 
@@ -170,43 +174,63 @@ void run_follower_sequential(const unsigned int node_id, char* log_pool, ibv_cq*
     }
 }
 
+enum class ConnType : uint8_t { FOLLOWER, CLIENT };
 struct ConnPrivateData {
     uintptr_t addr;
     uint32_t rkey;
     uint32_t node_id;
+    ConnType type;
+
 } __attribute__((packed));
 
-void run_clients(
-    const uint32_t num_clients,
-    const uint32_t num_ops
-) {
+void run_clients() {
+    std::vector<std::thread> workers;
+    for (int i = 0; i < NUM_CLIENTS; i++) {
+        workers.emplace_back([]() {
 
+        });
+    }
+
+    for (auto& worker : workers) {
+        worker.join();
+    }
 }
 
-void run_leader(const uint32_t node_id, const uint32_t num_clients) {
+void run_leader(const uint32_t node_id) {
     std::cout << "[leader] starting\n";
 
     std::vector<Peer> peers(CLUSTER_NODES.size());
-    const uint32_t expected = CLUSTER_NODES.size() - 1;
+    std::vector<rdma_cm_id*> client_ids;
+
+    const uint32_t expected_followers = CLUSTER_NODES.size() - 1;
+
     rdma_event_channel* ec = rdma_create_event_channel();
+    if (!ec) throw std::runtime_error("rdma_create_event_channel failed");
+
     rdma_cm_id* listener = nullptr;
+    if (rdma_create_id(ec, &listener, nullptr, RDMA_PS_TCP))
+        throw std::runtime_error("rdma_create_id failed");
+
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(RDMA_PORT);
     addr.sin_addr.s_addr = INADDR_ANY;
 
-    if (!ec) throw std::runtime_error("rdma_create_event_channel failed");
-    if (rdma_create_id(ec, &listener, nullptr, RDMA_PS_TCP)) throw std::runtime_error("rdma_create_id failed");
-    if (rdma_bind_addr(listener, reinterpret_cast<sockaddr*>(&addr))) throw std::runtime_error("rdma_bind_addr failed");
-    if (rdma_listen(listener, 16)) throw std::runtime_error("rdma_listen failed");
+    if (rdma_bind_addr(listener, reinterpret_cast<sockaddr*>(&addr)))
+        throw std::runtime_error("rdma_bind_addr failed");
 
-    std::cout << "[leader] waiting for " << expected << " nodes\n";
+    if (rdma_listen(listener, 16))
+        throw std::runtime_error("rdma_listen failed");
+
+    std::cout << "[leader] waiting for " << expected_followers << " nodes and " << NUM_CLIENTS << " clients\n";
 
     ibv_pd* pd = nullptr;
     ibv_cq* cq = nullptr;
 
-    int connected = 0;
-    while (connected < expected) {
+    uint32_t followers_connected = 0;
+    uint32_t clients_connected = 0;
+
+    while (followers_connected < expected_followers || clients_connected < NUM_CLIENTS) {
         rdma_cm_event* event = nullptr;
         if (rdma_get_cm_event(ec, &event)) {
             perror("rdma_get_cm_event");
@@ -216,25 +240,18 @@ void run_leader(const uint32_t node_id, const uint32_t num_clients) {
         if (event->event == RDMA_CM_EVENT_CONNECT_REQUEST) {
             rdma_cm_id* id = event->id;
             const auto* incoming = (ConnPrivateData*)event->param.conn.private_data;
+
             if (!incoming || event->param.conn.private_data_len < sizeof(ConnPrivateData)) {
-                rdma_reject(event->id, nullptr, 0);
-                throw std::runtime_error("Private data too small!");
+                std::cerr << "[leader] Rejecting connection: Private data invalid\n";
+                rdma_reject(id, nullptr, 0);
+                rdma_ack_cm_event(event);
+                continue;
             }
-
-            const uint32_t nid = incoming->node_id;
-
-            std::cout << "\n--- New Node Connection Data ---" << std::endl;
-            std::cout << "Node ID:         " << nid << std::endl;
-            std::cout << "Remote Address:  " << std::hex << "0x" << incoming->addr << std::dec << std::endl;
-            std::cout << "Remote RKey:     " << "0x" << std::hex << incoming->rkey << std::dec << std::endl;
-            std::cout << "Private Data Len: " << (int)event->param.conn.private_data_len << " bytes" << std::endl;
-            std::cout << "---------------------------------\n" << std::endl;
 
             if (!pd) {
                 pd = ibv_alloc_pd(id->verbs);
                 if (!pd) throw std::runtime_error("ibv_alloc_pd failed");
-
-                cq = ibv_create_cq(id->verbs, 4096, nullptr, nullptr, 0);
+                cq = ibv_create_cq(id->verbs, 8192, nullptr, nullptr, 0);
                 if (!cq) throw std::runtime_error("ibv_create_cq failed");
             }
 
@@ -250,47 +267,60 @@ void run_leader(const uint32_t node_id, const uint32_t num_clients) {
             qp_attr.sq_sig_all = 0;
 
             if (rdma_create_qp(id, pd, &qp_attr)) {
+                std::cerr << "[leader] QP creation failed\n";
                 rdma_reject(id, nullptr, 0);
                 rdma_ack_cm_event(event);
                 continue;
             }
 
-            rdma_conn_param accept{};
-            if (rdma_accept(id, &accept)) {
+            rdma_conn_param accept_params{};
+            if (rdma_accept(id, &accept_params)) {
                 perror("rdma_accept");
                 rdma_destroy_qp(id);
-                rdma_reject(id, nullptr, 0);
                 rdma_ack_cm_event(event);
                 continue;
             }
-            peers[nid] = Peer{nid, id, incoming->addr, incoming->rkey};
 
-            ++connected;
-            std::cout << "[leader] connected node " << nid << "\n";
+            if (incoming->type == ConnType::FOLLOWER) {
+                const uint32_t nid = incoming->node_id;
+                peers[nid] = Peer{nid, id, incoming->addr, incoming->rkey};
+                followers_connected++;
+                std::cout << "[leader] Connected Follower Node: " << nid << "\n";
+            } else if (incoming->type == ConnType::FOLLOWER) {
+                client_ids.push_back(id);
+                clients_connected++;
+                std::cout << "[leader] Connected Client (" << clients_connected << "/" << NUM_CLIENTS << ")\n";
+            }
         }
 
         rdma_ack_cm_event(event);
     }
 
-    constexpr size_t HUGE_PAGE_SIZE = 2 * 1024 * 1024;
-    const size_t aligned_size = ((FINAL_POOL_SIZE + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE) * HUGE_PAGE_SIZE;
+    void* raw_mem = mmap(NULL, ALIGNED_SIZE,
+                         PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
+                         -1, 0);
 
-    auto log_pool = static_cast<char*>(mmap(NULL, aligned_size,
-                                           PROT_READ | PROT_WRITE,
-                                           MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
-                                           -1, 0));
-    if (log_pool == MAP_FAILED) {
-        perror("mmap hugepages failed, falling back to standard pages");
+    char* log_pool = nullptr;
+    if (raw_mem == MAP_FAILED) {
+        perror("[leader] mmap hugepages failed, falling back to standard pages");
         log_pool = static_cast<char*>(aligned_alloc(4096, FINAL_POOL_SIZE));
         if (!log_pool) throw std::runtime_error("Failed to allocate log_pool");
+    } else {
+        log_pool = static_cast<char*>(raw_mem);
     }
+
     memset(log_pool, 0, FINAL_POOL_SIZE);
 
-    const ibv_mr* mr = ibv_reg_mr(pd, log_pool, FINAL_POOL_SIZE, IBV_ACCESS_LOCAL_WRITE);
+    // Register memory for RDMA access
+    const ibv_mr* mr = ibv_reg_mr(pd, log_pool, FINAL_POOL_SIZE, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
     if (!mr) throw std::runtime_error("ibv_reg_mr failed");
 
-    std::cout << "[leader] all nodes connected\n";
-    run_leader_sequential(node_id, peers, log_pool, mr);
+    std::cout << "[leader] All nodes and clients connected. Registering log at "
+              << std::hex << (uintptr_t)log_pool << std::dec << "\n";
+
+    // Enter the main sequential replication loop
+    // run_leader_sequential(node_id, peers, log_pool, mr);
 }
 
 
@@ -345,10 +375,7 @@ void run_follower(const unsigned int node_id) {
 
     if (rdma_create_qp(id, pd, &qp_attr)) throw std::runtime_error("rdma_create_qp failed");
 
-    constexpr size_t HUGE_PAGE_SIZE = 2 * 1024 * 1024;
-    const size_t aligned_size = ((FINAL_POOL_SIZE + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE) * HUGE_PAGE_SIZE;
-
-    auto log_pool = static_cast<char*>(mmap(NULL, aligned_size,
+    auto log_pool = static_cast<char*>(mmap(NULL, ALIGNED_SIZE,
                                            PROT_READ | PROT_WRITE,
                                            MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
                                            -1, 0));
@@ -366,6 +393,7 @@ void run_follower(const unsigned int node_id) {
     my_info.addr = reinterpret_cast<uintptr_t>(log_pool);
     my_info.rkey = mr->rkey;
     my_info.node_id = static_cast<uint32_t>(node_id);
+    my_info.type = ConnType::FOLLOWER;
 
     rdma_conn_param param{};
     param.private_data = &my_info;
@@ -402,18 +430,15 @@ int main() {
         CPU_SET(1, &cpuset);
         pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
 
-        const uint32_t node_id = get_uint_env("NODE_ID");
-        const uint32_t num_clients = get_uint_env("NUM_CLIENTS");
-        const bool is_client = get_uint_env("IS_CLIENT") != 0;
-
-        if (is_client) {
-            const uint32_t num_ops = get_uint_env("NUM_OPS");
+        if (get_uint_env("IS_CLIENT") != 0) {
+            std::cout << "Starting as a client!" << std::endl;
+            run_clients();
         } else {
+            const uint32_t node_id = get_uint_env("NODE_ID");
             if (node_id == 0) run_leader(node_id);
             else run_follower(node_id);
         }
-    }
-    catch (const std::exception& e) {
+    } catch (const std::exception& e) {
         std::cerr << "[error] " << e.what() << "\n";
         return 1;
     }
