@@ -250,79 +250,79 @@ void run_follower_sequential(const unsigned int node_id, char* log_pool, ibv_cq*
     //     if (current_index % MAX_LOG_ENTRIES == 0) {
     //         std::cout << "[Leader] Completed full log cycles (" << current_index << " total entries)" << std::endl;
     //     }
-    // uint32_t current_index = 0;
-
-    // for (int i = 0; i < 512; i++) {
-    //     ibv_recv_wr rr{};
-    //     ibv_recv_wr* bad_rr;
-    //     rr.sg_list = nullptr;
-    //     rr.num_sge = 0;
-    //     ibv_post_recv(qp, &rr, &bad_rr);
-    // }
-    //
-    // while (true) {
-    //     ibv_wc wc{};
-    //     int n = ibv_poll_cq(cq, 1, &wc);
-    //     if (n > 0) {
-    //         if (wc.status != IBV_WC_SUCCESS) continue;
-    //         const uint32_t received_index = be32toh(wc.imm_data);
-    //         const uint32_t slot = received_index % MAX_LOG_ENTRIES;
-    //         char* entry_data = log_pool + (slot * ENTRY_SIZE);
-    //
-    //         ibv_recv_wr rr{};
-    //         ibv_recv_wr* bad_rr;
-    //         ibv_post_recv(qp, &rr, &bad_rr);
-    //
-    //         current_index++;
-    //         if (current_index % 100000 == 0) {
-    //             std::cout << "[Follower] Processed up to: " << received_index << "\n";
-    //         }
-    //     }
-    // }
-
     uint32_t current_index = 0;
-    int count_to_refill = 0;
-    const int REFILL_THRESHOLD = 64;
 
-    // Initial heavy fill
     for (int i = 0; i < 512; i++) {
         ibv_recv_wr rr{};
         ibv_recv_wr* bad_rr;
+        rr.sg_list = nullptr;
+        rr.num_sge = 0;
         ibv_post_recv(qp, &rr, &bad_rr);
     }
 
     while (true) {
-        ibv_wc wc[16]; // Poll up to 16 at a time
-        int n = ibv_poll_cq(cq, 16, wc);
-
+        ibv_wc wc{};
+        int n = ibv_poll_cq(cq, 1, &wc);
         if (n > 0) {
-            for (int i = 0; i < n; i++) {
-                if (wc[i].status == IBV_WC_SUCCESS) {
-                    // Extract index and process (Zero-copy)
-                    const uint32_t received_index = be32toh(wc[i].imm_data);
-                    if (current_index % 100000 == 0) {
-                        std::cout << "[Follower] Processed up to: " << received_index << "\n";
-                    }
-                    current_index++;
-                }
-            }
+            if (wc.status != IBV_WC_SUCCESS) continue;
+            const uint32_t received_index = be32toh(wc.imm_data);
+            const uint32_t slot = received_index % MAX_LOG_ENTRIES;
+            char* entry_data = log_pool + (slot * ENTRY_SIZE);
 
-            count_to_refill += n;
+            ibv_recv_wr rr{};
+            ibv_recv_wr* bad_rr;
+            ibv_post_recv(qp, &rr, &bad_rr);
 
-            // Only "disturb" the NIC when we've used a significant batch
-            if (count_to_refill >= REFILL_THRESHOLD) {
-                ibv_recv_wr rrs[REFILL_THRESHOLD];
-                for (int j = 0; j < REFILL_THRESHOLD; j++) {
-                    rrs[j].next = (j == REFILL_THRESHOLD - 1) ? nullptr : &rrs[j+1];
-                    rrs[j].sg_list = nullptr;
-                    rrs[j].num_sge = 0;
-                }
-                ibv_recv_wr* bad_rr;
-                ibv_post_recv(qp, &rrs[0], &bad_rr); // One doorbell for 64 slots
-                count_to_refill = 0;
+            current_index++;
+            if (current_index % 100000 == 0) {
+                std::cout << "[Follower] Processed up to: " << received_index << "\n";
             }
         }
     }
+    //
+    // uint32_t current_index = 0;
+    // int count_to_refill = 0;
+    // const int REFILL_THRESHOLD = 64;
+    //
+    // // Initial heavy fill
+    // for (int i = 0; i < 512; i++) {
+    //     ibv_recv_wr rr{};
+    //     ibv_recv_wr* bad_rr;
+    //     ibv_post_recv(qp, &rr, &bad_rr);
+    // }
+    //
+    // while (true) {
+    //     ibv_wc wc[16]; // Poll up to 16 at a time
+    //     int n = ibv_poll_cq(cq, 16, wc);
+    //
+    //     if (n > 0) {
+    //         for (int i = 0; i < n; i++) {
+    //             if (wc[i].status == IBV_WC_SUCCESS) {
+    //                 // Extract index and process (Zero-copy)
+    //                 const uint32_t received_index = be32toh(wc[i].imm_data);
+    //                 if (current_index % 100000 == 0) {
+    //                     std::cout << "[Follower] Processed up to: " << received_index << "\n";
+    //                 }
+    //                 current_index++;
+    //             }
+    //         }
+    //
+    //         count_to_refill += n;
+    //
+    //         // Only "disturb" the NIC when we've used a significant batch
+    //         if (count_to_refill >= REFILL_THRESHOLD) {
+    //             ibv_recv_wr rrs[REFILL_THRESHOLD];
+    //             for (int j = 0; j < REFILL_THRESHOLD; j++) {
+    //                 rrs[j].next = (j == REFILL_THRESHOLD - 1) ? nullptr : &rrs[j+1];
+    //                 rrs[j].sg_list = nullptr;
+    //                 rrs[j].num_sge = 0;
+    //             }
+    //             ibv_recv_wr* bad_rr;
+    //             ibv_post_recv(qp, &rrs[0], &bad_rr); // One doorbell for 64 slots
+    //             count_to_refill = 0;
+    //         }
+    //     }
+    // }
 }
 
 struct ConnPrivateData {
