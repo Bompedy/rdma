@@ -1,0 +1,21 @@
+#!/bin/bash
+
+# 1. Extract the last digit (e.g., 6)
+RAW_ID=$(ifconfig enp8s0d1 | grep 'inet ' | awk '{print $2}' | cut -d'.' -f4)
+
+echo "Detected Raw ID: $RAW_ID | Setting NODE_ID to: $NODE_ID"
+
+# 3. Build and Run
+mkdir -p /local/rdma/build
+cd /local/rdma/build || exit
+cd ..
+git pull
+
+# Standard build dance
+mkdir -p build && cd build
+cmake ..
+make -j
+
+# 4. Execute with the calculated NODE_ID
+NODE_ID=$NODE_ID ./rdma
+~
