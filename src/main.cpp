@@ -198,7 +198,7 @@ void run_leader_sequential(
             sge.lkey = local_mr->lkey;
 
             swr.wr_id = current_index;
-            swr.opcode = IBV_WR_RDMA_WRITE;
+            swr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
             swr.sg_list = &sge;
             swr.num_sge = 1;
             swr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
