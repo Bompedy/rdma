@@ -22,5 +22,4 @@ cmake ..
 make -j
 
 # 4. Execute with the calculated NODE_ID
-NODE_ID=$NODE_ID ./rdma
-~
+env NODE_ID=$NODE_ID ./rdma
