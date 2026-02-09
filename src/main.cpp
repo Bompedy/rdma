@@ -287,6 +287,10 @@ struct ConnPrivateData {
     uint32_t node_id;
 } __attribute__((packed));
 
+void run_clients(const uint32_t num_clients) {
+
+}
+
 void run_leader(const uint32_t node_id) {
     std::cout << "[leader] starting\n";
 
@@ -346,11 +350,12 @@ void run_leader(const uint32_t node_id) {
             qp_attr.qp_type = IBV_QPT_RC;
             qp_attr.send_cq = cq;
             qp_attr.recv_cq = cq;
-            qp_attr.cap.max_send_wr = 128;
-            qp_attr.cap.max_recv_wr = 128;
+            qp_attr.cap.max_send_wr = 512;
+            qp_attr.cap.max_recv_wr = 512;
             qp_attr.cap.max_send_sge = 1;
             qp_attr.cap.max_recv_sge = 1;
-            // qp_attr.sq_sig_all = 0;
+            qp_attr.cap.max_inline_data = 64;
+            qp_attr.sq_sig_all = 0;
 
             if (rdma_create_qp(id, pd, &qp_attr)) {
                 rdma_reject(id, nullptr, 0);
@@ -440,11 +445,11 @@ void run_follower(const unsigned int node_id) {
     qp_attr.qp_type = IBV_QPT_RC;
     qp_attr.send_cq = cq;
     qp_attr.recv_cq = cq;
-    qp_attr.cap.max_send_wr = 128;
-    qp_attr.cap.max_recv_wr = 128;
+    qp_attr.cap.max_send_wr = 2048;
+    qp_attr.cap.max_recv_wr = 2048;
     qp_attr.cap.max_send_sge = 1;
     qp_attr.cap.max_recv_sge = 1;
-    qp_attr.cap.max_inline_data = 16;
+    qp_attr.cap.max_inline_data = 64;
 
     if (rdma_create_qp(id, pd, &qp_attr)) throw std::runtime_error("rdma_create_qp failed");
 
