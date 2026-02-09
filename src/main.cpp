@@ -212,7 +212,7 @@ void run_leader_sequential(
 
         // Wait for hardware to confirm majority
         int acks = 0;
-        while (acks < majority) {
+        while (acks < 2) {
             ibv_wc wc[16];
             const int n = ibv_poll_cq(cq, 16, wc);
             for (int i = 0; i < n; ++i) {
