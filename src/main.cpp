@@ -237,47 +237,47 @@ void run_leader_sequential(
 
 void run_follower_sequential(const unsigned int node_id, char* log_pool, ibv_cq* cq, ibv_qp* qp) {
     uint32_t current_index = 0;
-    
-    while (true) {
-        const uint32_t slot = current_index % MAX_LOG_ENTRIES;
-        volatile char* ready_flag = log_pool + (slot * ENTRY_SIZE) + (ENTRY_SIZE - 1);
-        while (*ready_flag != 1) {}
-        std::atomic_thread_fence(std::memory_order_acquire);
-        const char* entry_data = log_pool + (slot * ENTRY_SIZE);
-        *ready_flag = 0;
-        current_index++;
 
-        if (current_index % MAX_LOG_ENTRIES == 0) {
-            std::cout << "[Leader] Completed full log cycles (" << current_index << " total entries)" << std::endl;
-        }
-    // uint32_t current_index = 0;
-    //
-    // for (int i = 0; i < 512; i++) {
-    //     ibv_recv_wr rr{};
-    //     ibv_recv_wr* bad_rr;
-    //     rr.sg_list = nullptr;
-    //     rr.num_sge = 0;
-    //     ibv_post_recv(qp, &rr, &bad_rr);
-    // }
-    //
     // while (true) {
-    //     ibv_wc wc{};
-    //     int n = ibv_poll_cq(cq, 1, &wc);
-    //     if (n > 0) {
-    //         if (wc.status != IBV_WC_SUCCESS) continue;
-    //         const uint32_t received_index = be32toh(wc.imm_data);
-    //         const uint32_t slot = received_index % MAX_LOG_ENTRIES;
-    //         char* entry_data = log_pool + (slot * ENTRY_SIZE);
+    //     const uint32_t slot = current_index % MAX_LOG_ENTRIES;
+    //     volatile char* ready_flag = log_pool + (slot * ENTRY_SIZE) + (ENTRY_SIZE - 1);
+    //     while (*ready_flag != 1) {}
+    //     std::atomic_thread_fence(std::memory_order_acquire);
+    //     const char* entry_data = log_pool + (slot * ENTRY_SIZE);
+    //     *ready_flag = 0;
+    //     current_index++;
     //
-    //         ibv_recv_wr rr{};
-    //         ibv_recv_wr* bad_rr;
-    //         ibv_post_recv(qp, &rr, &bad_rr);
-    //
-    //         current_index++;
-    //         if (current_index % 100000 == 0) {
-    //             std::cout << "[Follower] Processed up to: " << received_index << "\n";
-    //         }
+    //     if (current_index % MAX_LOG_ENTRIES == 0) {
+    //         std::cout << "[Leader] Completed full log cycles (" << current_index << " total entries)" << std::endl;
     //     }
+    // uint32_t current_index = 0;
+
+    for (int i = 0; i < 512; i++) {
+        ibv_recv_wr rr{};
+        ibv_recv_wr* bad_rr;
+        rr.sg_list = nullptr;
+        rr.num_sge = 0;
+        ibv_post_recv(qp, &rr, &bad_rr);
+    }
+
+    while (true) {
+        ibv_wc wc{};
+        int n = ibv_poll_cq(cq, 1, &wc);
+        if (n > 0) {
+            if (wc.status != IBV_WC_SUCCESS) continue;
+            const uint32_t received_index = be32toh(wc.imm_data);
+            const uint32_t slot = received_index % MAX_LOG_ENTRIES;
+            char* entry_data = log_pool + (slot * ENTRY_SIZE);
+
+            ibv_recv_wr rr{};
+            ibv_recv_wr* bad_rr;
+            ibv_post_recv(qp, &rr, &bad_rr);
+
+            current_index++;
+            if (current_index % 100000 == 0) {
+                std::cout << "[Follower] Processed up to: " << received_index << "\n";
+            }
+        }
     }
 }
 
