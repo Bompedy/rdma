@@ -3,6 +3,11 @@
 # 1. Extract the last digit (e.g., 6)
 RAW_ID=$(ifconfig enp8s0d1 | grep 'inet ' | awk '{print $2}' | cut -d'.' -f4)
 
+if [ -z "$RAW_ID" ]; then
+    echo "Error: Could not find IP for enp8s0d1"
+    exit 1
+fi
+
 echo "Detected Raw ID: $RAW_ID | Setting NODE_ID to: $NODE_ID"
 
 # 3. Build and Run
