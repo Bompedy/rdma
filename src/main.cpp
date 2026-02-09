@@ -19,10 +19,17 @@ const std::vector<std::string> CLUSTER_NODES = {
     "192.168.1.3",
 };
 
-unsigned int get_node_id() {
-    const char* id = std::getenv("NODE_ID");
-    if (!id) throw std::runtime_error("NODE_ID not set");
-    return std::stoi(id);
+unsigned int get_uint_env(const std::string& name) {
+    const char* val = std::getenv(name.c_str());
+    if (!val || std::string(val).empty()) {
+        throw std::runtime_error("Environment variable '" + name + "' is not set or empty");
+    }
+
+    try {
+        return static_cast<unsigned int>(std::stoul(val));
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Environment variable '" + name + "' has invalid value: " + val);
+    }
 }
 
 struct Peer {
@@ -78,116 +85,22 @@ ibv_send_wr* build_propose_wr(
     return &swr;
 }
 
-void run_leader_mu(
-    const unsigned int node_id,
-    const std::vector<Peer>& peers, char* local_log, const ibv_mr* local_mr) {
-    std::array<uint32_t, MAX_LOG_ENTRIES> acks{};
-    const uint32_t majority = peers.size() - 2;
-
-    ibv_cq* cq = peers[1].id->qp->send_cq;
-
-    for (const auto& peer : peers) {
-        if (peer.node_id == node_id || !peer.id) continue;
-
-        ibv_send_wr* head = nullptr;
-        ibv_send_wr* bad_wr;
-        for (int i = PIPE_DEPTH - 1; i >= 0; --i) {
-            head = build_propose_wr(i, peer, local_log, local_mr, head);
-        }
-        if (ibv_post_send(peer.id->qp, head, &bad_wr)) {
-
-        }
-    }
-
-    ibv_wc wc[16];
-    while (true) {
-        const int n = ibv_poll_cq(cq, 16, wc);
-        for (int i = 0; i < n; ++i) {
-            if (wc[i].status != IBV_WC_SUCCESS) continue;
-            if (const uint32_t acked_idx = wc[i].wr_id; ++acks[acked_idx] >= majority) {
-                std::cout << "Got majority for: " << acked_idx << "\n";
-            }
-        }
-    }
-}
-
-void run_follower_mu(const unsigned int node_id, const char* log_pool) {
-    uint32_t last_applied = 0;
-    const volatile auto* remote_commit_ptr = reinterpret_cast<const volatile uint32_t*>(log_pool + COMMIT_INDEX_OFFSET);
-
-    while (true) {
-        // if (const uint32_t current_commit = *remote_commit_ptr; current_commit > last_applied) {
-        //     std::atomic_thread_fence(std::memory_order_acquire);
-        //     for (uint32_t i = last_applied; i < current_commit; ++i) {
-        //         const uint32_t log_idx = i % MAX_LOG_ENTRIES;
-        //         const char* entry_data = log_pool + (log_idx * ENTRY_SIZE);
-        //         std::cout << "Applying index: " << log_idx << "\n";
-        //     }
-        //
-        //     last_applied = current_commit;
-        //     std::atomic_thread_fence(std::memory_order_release);
-        // }
-    }
-}
-
-std::atomic<uint64_t> global_ops_count{0};
-std::atomic<uint64_t> global_total_latency_ns{0};
-std::atomic<uint64_t> last_op_latency_ns{0};
-
-
-void monitor_performance() {
-    auto last_time = std::chrono::steady_clock::now();
-    uint64_t last_count = 0;
-    uint64_t last_latency_sum = 0;
-
-    while (true) {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-        auto now = std::chrono::steady_clock::now();
-
-        uint64_t current_count = global_ops_count.load(std::memory_order_relaxed);
-        uint64_t current_latency_sum = global_total_latency_ns.load(std::memory_order_relaxed);
-
-        uint64_t delta_ops = current_count - last_count;
-        uint64_t delta_latency = current_latency_sum - last_latency_sum;
-
-        if (delta_ops > 0) {
-            double avg_us = (static_cast<double>(delta_latency) / delta_ops) / 1000.0;
-            double cur_us = static_cast<double>(last_op_latency_ns.load()) / 1000.0;
-
-            std::cout << "[Monitor] " << delta_ops << " ops/sec | "
-                      << "Avg Latency: " << avg_us << " us | "
-                      << "Last Op: " << cur_us << " us" << std::endl;
-        }
-
-        last_count = current_count;
-        last_latency_sum = current_latency_sum;
-        last_time = now;
-    }
-}
-
 void run_leader_sequential(
     const unsigned int node_id,
     const std::vector<Peer>& peers,
     const char* local_log,
     const ibv_mr* local_mr
 ) {
-    std::thread t(monitor_performance);
-    t.detach();
-
     const uint32_t majority = peers.size() - 1;
     ibv_cq* cq = peers[1].id->qp->send_cq;
     uint32_t current_index = 0;
 
     while (true) {
-        // --- START MEASUREMENT ---
-        auto start = std::chrono::high_resolution_clock::now();
-
         const uint32_t slot = current_index % MAX_LOG_ENTRIES;
 
         for (const auto& peer : peers) {
             if (peer.node_id == node_id || !peer.id) continue;
 
-            // Prepare WR
             ibv_send_wr& swr = LOG_WRS[peer.node_id][0];
             ibv_sge& sge = LOG_SGES[peer.node_id][0];
 
@@ -210,9 +123,8 @@ void run_leader_sequential(
             ibv_post_send(peer.id->qp, &swr, &bad_wr);
         }
 
-        // Wait for hardware to confirm majority
         int acks = 0;
-        while (acks < 2) {
+        while (acks < majority) {
             ibv_wc wc[16];
             const int n = ibv_poll_cq(cq, 16, wc);
             for (int i = 0; i < n; ++i) {
@@ -222,34 +134,11 @@ void run_leader_sequential(
             }
         }
 
-
-        // --- END MEASUREMENT ---
-        auto end = std::chrono::high_resolution_clock::now();
-        const uint64_t lat = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
-
-        last_op_latency_ns.store(lat, std::memory_order_relaxed);
-        global_total_latency_ns.fetch_add(lat, std::memory_order_relaxed);
-        global_ops_count.fetch_add(1, std::memory_order_relaxed);
-
         current_index++;
     }
 }
 
 void run_follower_sequential(const unsigned int node_id, char* log_pool, ibv_cq* cq, ibv_qp* qp) {
-    // uint32_t current_index = 0;
-
-    // while (true) {
-    //     const uint32_t slot = current_index % MAX_LOG_ENTRIES;
-    //     volatile char* ready_flag = log_pool + (slot * ENTRY_SIZE) + (ENTRY_SIZE - 1);
-    //     while (*ready_flag != 1) {}
-    //     std::atomic_thread_fence(std::memory_order_acquire);
-    //     const char* entry_data = log_pool + (slot * ENTRY_SIZE);
-    //     *ready_flag = 0;
-    //     current_index++;
-    //
-    //     if (current_index % MAX_LOG_ENTRIES == 0) {
-    //         std::cout << "[Leader] Completed full log cycles (" << current_index << " total entries)" << std::endl;
-    //     }
     uint32_t current_index = 0;
 
     for (int i = 0; i < 512; i++) {
@@ -279,50 +168,6 @@ void run_follower_sequential(const unsigned int node_id, char* log_pool, ibv_cq*
             }
         }
     }
-    //
-    // uint32_t current_index = 0;
-    // int count_to_refill = 0;
-    // const int REFILL_THRESHOLD = 64;
-    //
-    // // Initial heavy fill
-    // for (int i = 0; i < 512; i++) {
-    //     ibv_recv_wr rr{};
-    //     ibv_recv_wr* bad_rr;
-    //     ibv_post_recv(qp, &rr, &bad_rr);
-    // }
-    //
-    // while (true) {
-    //     ibv_wc wc[16]; // Poll up to 16 at a time
-    //     int n = ibv_poll_cq(cq, 16, wc);
-    //
-    //     if (n > 0) {
-    //         for (int i = 0; i < n; i++) {
-    //             if (wc[i].status == IBV_WC_SUCCESS) {
-    //                 // Extract index and process (Zero-copy)
-    //                 const uint32_t received_index = be32toh(wc[i].imm_data);
-    //                 if (current_index % 100000 == 0) {
-    //                     std::cout << "[Follower] Processed up to: " << received_index << "\n";
-    //                 }
-    //                 current_index++;
-    //             }
-    //         }
-    //
-    //         count_to_refill += n;
-    //
-    //         // Only "disturb" the NIC when we've used a significant batch
-    //         if (count_to_refill >= REFILL_THRESHOLD) {
-    //             ibv_recv_wr rrs[REFILL_THRESHOLD];
-    //             for (int j = 0; j < REFILL_THRESHOLD; j++) {
-    //                 rrs[j].next = (j == REFILL_THRESHOLD - 1) ? nullptr : &rrs[j+1];
-    //                 rrs[j].sg_list = nullptr;
-    //                 rrs[j].num_sge = 0;
-    //             }
-    //             ibv_recv_wr* bad_rr;
-    //             ibv_post_recv(qp, &rrs[0], &bad_rr); // One doorbell for 64 slots
-    //             count_to_refill = 0;
-    //         }
-    //     }
-    // }
 }
 
 struct ConnPrivateData {
@@ -331,11 +176,14 @@ struct ConnPrivateData {
     uint32_t node_id;
 } __attribute__((packed));
 
-void run_clients(const uint32_t num_clients) {
+void run_clients(
+    const uint32_t num_clients,
+    const uint32_t num_ops
+) {
 
 }
 
-void run_leader(const uint32_t node_id) {
+void run_leader(const uint32_t node_id, const uint32_t num_clients) {
     std::cout << "[leader] starting\n";
 
     std::vector<Peer> peers(CLUSTER_NODES.size());
@@ -551,12 +399,19 @@ int main() {
     try {
         cpu_set_t cpuset;
         CPU_ZERO(&cpuset);
-        CPU_SET(1, &cpuset); // Pin to Core 1
+        CPU_SET(1, &cpuset);
         pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
 
-        const unsigned int node_id = get_node_id();
-        if (node_id == 0) run_leader(node_id);
-        else run_follower(node_id);
+        const uint32_t node_id = get_uint_env("NODE_ID");
+        const uint32_t num_clients = get_uint_env("NUM_CLIENTS");
+        const bool is_client = get_uint_env("IS_CLIENT") != 0;
+
+        if (is_client) {
+            const uint32_t num_ops = get_uint_env("NUM_OPS");
+        } else {
+            if (node_id == 0) run_leader(node_id);
+            else run_follower(node_id);
+        }
     }
     catch (const std::exception& e) {
         std::cerr << "[error] " << e.what() << "\n";
