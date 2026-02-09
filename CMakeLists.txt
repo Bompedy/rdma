@@ -5,6 +5,8 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 cmake_policy(SET CMP0069 NEW)
 
+add_executable(rdma src/main.cpp)
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     message(STATUS ">>> Using Clang compiler: enabling max optimizations")
     add_compile_options(-march=native)
@@ -18,6 +20,5 @@ endif()
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(RDMA REQUIRED libibverbs librdmacm)
-add_executable(rdma src/main.cpp)
 target_include_directories(rdma PRIVATE ${RDMA_INCLUDE_DIRS})
 target_link_libraries(rdma PRIVATE ${RDMA_LIBRARIES})

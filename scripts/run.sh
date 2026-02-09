@@ -32,4 +32,4 @@ make -j
 
 # 5. Execute
 # We pass the calculated NODE_ID to your C++ program
-env NODE_ID=$NODE_ID ./rdma
+sudo NODE_ID=$NODE_ID ./rdma
