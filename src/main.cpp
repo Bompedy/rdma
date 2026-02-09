@@ -11,6 +11,7 @@
 #include <vector>
 #include <netinet/in.h>
 #include <x86intrin.h>
+#include <sys/mman.h>
 
 const std::vector<std::string> CLUSTER_NODES = {
     "192.168.1.1",
@@ -345,8 +346,15 @@ void run_leader(const uint32_t node_id) {
         rdma_ack_cm_event(event);
     }
 
-    const auto log_pool = static_cast<char*>(aligned_alloc(4096, FINAL_POOL_SIZE));
-    if (!log_pool) throw std::runtime_error("Failed to allocate log_pool");
+    auto log_pool = static_cast<char*>(mmap(NULL, FINAL_POOL_SIZE,
+                                        PROT_READ | PROT_WRITE,
+                                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
+                                        -1, 0));
+    if (log_pool == MAP_FAILED) {
+        perror("mmap hugepages failed, falling back to standard pages");
+        log_pool = static_cast<char*>(aligned_alloc(4096, FINAL_POOL_SIZE));
+        if (!log_pool) throw std::runtime_error("Failed to allocate log_pool");
+    }
     memset(log_pool, 0, FINAL_POOL_SIZE);
 
     const ibv_mr* mr = ibv_reg_mr(pd, log_pool, FINAL_POOL_SIZE, IBV_ACCESS_LOCAL_WRITE);
@@ -408,8 +416,15 @@ void run_follower(const unsigned int node_id) {
 
     if (rdma_create_qp(id, pd, &qp_attr)) throw std::runtime_error("rdma_create_qp failed");
 
-    const auto log_pool = static_cast<char*>(aligned_alloc(4096, FINAL_POOL_SIZE));
-    if (!log_pool) throw std::runtime_error("Failed to allocate log_pool");
+    auto log_pool = static_cast<char*>(mmap(NULL, FINAL_POOL_SIZE,
+                                           PROT_READ | PROT_WRITE,
+                                           MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
+                                           -1, 0));
+    if (log_pool == MAP_FAILED) {
+        perror("mmap hugepages failed, falling back to standard pages");
+        log_pool = static_cast<char*>(aligned_alloc(4096, FINAL_POOL_SIZE));
+        if (!log_pool) throw std::runtime_error("Failed to allocate log_pool");
+    }
     memset(log_pool, 0, FINAL_POOL_SIZE);
 
     const ibv_mr* mr = ibv_reg_mr(pd, log_pool, FINAL_POOL_SIZE, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
