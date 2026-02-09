@@ -357,7 +357,7 @@ void run_leader(const uint32_t node_id) {
                 peers[nid] = Peer{nid, id, incoming->addr, incoming->rkey};
                 followers_connected++;
                 std::cout << "[leader] Connected Follower Node: " << nid << "\n";
-            } else if (incoming->type == ConnType::FOLLOWER) {
+            } else if (incoming->type == ConnType::CLIENT) {
                 client_ids.push_back(id);
                 clients_connected++;
                 std::cout << "[leader] Connected Client (" << clients_connected << "/" << NUM_CLIENTS << ")\n";
