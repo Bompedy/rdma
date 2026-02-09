@@ -475,7 +475,7 @@ void run_follower(const unsigned int node_id) {
     std::cout << "[follower " << node_id << "] Connected and Established!\n";
     rdma_ack_cm_event(event);
 
-    run_follower_sequential(node_id, log_pool);
+    run_follower_sequential(node_id, log_pool, id->recv_cq, id->qp);
 }
 
 int main() {
