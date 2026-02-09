@@ -48,7 +48,7 @@ constexpr size_t TOTAL_POOL_SIZE = MAX_LOG_ENTRIES * ENTRY_SIZE;
 constexpr size_t METADATA_SIZE = 4096;
 constexpr size_t FINAL_POOL_SIZE = TOTAL_POOL_SIZE + METADATA_SIZE;
 constexpr size_t NUM_OPS = 1000;
-constexpr size_t NUM_CLIENTS = 1;
+constexpr size_t NUM_CLIENTS = 7;
 constexpr size_t HUGE_PAGE_SIZE = 2 * 1024 * 1024;
 constexpr size_t ALIGNED_SIZE = ((FINAL_POOL_SIZE + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE) * HUGE_PAGE_SIZE;
 //
@@ -185,9 +185,80 @@ struct ConnPrivateData {
 
 void run_clients() {
     std::vector<std::thread> workers;
-    for (int i = 0; i < NUM_CLIENTS; i++) {
-        workers.emplace_back([]() {
 
+    for (int i = 0; i < NUM_CLIENTS; i++) {
+        workers.emplace_back([i]() {
+            std::cout << "[client " << i << "] starting\n";
+
+            rdma_event_channel* ec = rdma_create_event_channel();
+            rdma_cm_id* id = nullptr;
+            sockaddr_in addr{};
+            addr.sin_family = AF_INET;
+            addr.sin_port = htons(RDMA_PORT);
+
+            inet_pton(AF_INET, CLUSTER_NODES[0].c_str(), &addr.sin_addr);
+
+            if (!ec) return;
+            if (rdma_create_id(ec, &id, nullptr, RDMA_PS_TCP)) return;
+
+            rdma_cm_event* event = nullptr;
+
+            if (rdma_resolve_addr(id, nullptr, reinterpret_cast<sockaddr*>(&addr), 2000)) return;
+            rdma_get_cm_event(ec, &event);
+            if (event->event != RDMA_CM_EVENT_ADDR_RESOLVED) {
+                rdma_ack_cm_event(event);
+                return;
+            }
+            rdma_ack_cm_event(event);
+
+            if (rdma_resolve_route(id, 2000)) return;
+            rdma_get_cm_event(ec, &event);
+            if (event->event != RDMA_CM_EVENT_ROUTE_RESOLVED) {
+                rdma_ack_cm_event(event);
+                return;
+            }
+            rdma_ack_cm_event(event);
+
+            ibv_pd* pd = ibv_alloc_pd(id->verbs);
+            ibv_cq* cq = ibv_create_cq(id->verbs, 16, nullptr, nullptr, 0);
+
+            ibv_qp_init_attr qp_attr{};
+            qp_attr.qp_type = IBV_QPT_RC;
+            qp_attr.send_cq = cq;
+            qp_attr.recv_cq = cq;
+            qp_attr.cap.max_send_wr = 16;
+            qp_attr.cap.max_recv_wr = 16;
+            qp_attr.cap.max_send_sge = 1;
+            qp_attr.cap.max_recv_sge = 1;
+
+            if (rdma_create_qp(id, pd, &qp_attr)) return;
+
+            ConnPrivateData my_info{};
+            my_info.node_id = static_cast<uint32_t>(i);
+            my_info.type = ConnType::CLIENT;
+            my_info.addr = 0;
+            my_info.rkey = 0;
+
+            rdma_conn_param param{};
+            param.private_data = &my_info;
+            param.private_data_len = sizeof(my_info);
+            param.responder_resources = 1;
+            param.initiator_depth = 1;
+
+            if (rdma_connect(id, &param)) return;
+
+            if (rdma_get_cm_event(ec, &event)) return;
+            if (event->event != RDMA_CM_EVENT_ESTABLISHED) {
+                rdma_ack_cm_event(event);
+                return;
+            }
+            rdma_ack_cm_event(event);
+
+            std::cout << "[client " << i << "] Connected to Leader!\n";
+
+            while (true) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
         });
     }
 
@@ -389,15 +460,15 @@ void run_follower(const unsigned int node_id) {
     const ibv_mr* mr = ibv_reg_mr(pd, log_pool, FINAL_POOL_SIZE, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
     if (!mr) throw std::runtime_error("ibv_reg_mr failed");
 
-    ConnPrivateData my_info{};
-    my_info.addr = reinterpret_cast<uintptr_t>(log_pool);
-    my_info.rkey = mr->rkey;
-    my_info.node_id = static_cast<uint32_t>(node_id);
-    my_info.type = ConnType::FOLLOWER;
+    ConnPrivateData private_data{};
+    private_data.addr = reinterpret_cast<uintptr_t>(log_pool);
+    private_data.rkey = mr->rkey;
+    private_data.node_id = static_cast<uint32_t>(node_id);
+    private_data.type = ConnType::FOLLOWER;
 
     rdma_conn_param param{};
-    param.private_data = &my_info;
-    param.private_data_len = sizeof(my_info);
+    param.private_data = &private_data;
+    param.private_data_len = sizeof(private_data);
     param.responder_resources = 1;
     param.initiator_depth = 1;
 
