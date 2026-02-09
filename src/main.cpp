@@ -455,7 +455,7 @@ int main() {
         CPU_SET(1, &cpuset); // Pin to Core 1
         pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
 
-        const unsigned int node_id = get_node_id();
+        const unsigned int node_id = get_node_id() - 1;
         if (node_id == 0) run_leader(node_id);
         else run_follower(node_id);
     }
