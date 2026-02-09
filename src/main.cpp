@@ -181,7 +181,6 @@ void run_leader_sequential(
         // --- START MEASUREMENT ---
         auto start = std::chrono::high_resolution_clock::now();
 
-        uint32_t acks_received = 0;
         const uint32_t slot = current_index % MAX_LOG_ENTRIES;
 
         for (const auto& peer : peers) {
@@ -210,30 +209,22 @@ void run_leader_sequential(
         }
 
         // Wait for hardware to confirm majority
-        // while (acks_received < majority) {
-        //     ibv_wc wc[16];
-        //     int n = ibv_poll_cq(cq, 16, wc);
-        //     for (int i = 0; i < n; ++i) {
-        //         if (wc[i].status == IBV_WC_SUCCESS && wc[i].wr_id == current_index) {
-        //             acks_received++;
-        //         }
-        //     }
-        // }
-
         int acks = 0;
         while (acks < majority) {
-            ibv_wc wc{};
-            if (ibv_poll_cq(cq, 1, &wc) > 0) { // Poll 1 at a time for lowest latency
-                if (wc.status == IBV_WC_SUCCESS) acks++;
+            ibv_wc wc[16];
+            const int n = ibv_poll_cq(cq, 16, wc);
+            for (int i = 0; i < n; ++i) {
+                if (wc[i].status == IBV_WC_SUCCESS && wc[i].wr_id == current_index) {
+                    acks++;
+                }
             }
-            // Optional: _mm_pause();
         }
+
 
         // --- END MEASUREMENT ---
         auto end = std::chrono::high_resolution_clock::now();
-        uint64_t lat = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+        const uint64_t lat = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
 
-        // Update atomics
         last_op_latency_ns.store(lat, std::memory_order_relaxed);
         global_total_latency_ns.fetch_add(lat, std::memory_order_relaxed);
         global_ops_count.fetch_add(1, std::memory_order_relaxed);
