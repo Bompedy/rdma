@@ -361,10 +361,13 @@ void run_leader(const uint32_t node_id) {
         rdma_ack_cm_event(event);
     }
 
-    auto log_pool = static_cast<char*>(mmap(NULL, FINAL_POOL_SIZE,
-                                        PROT_READ | PROT_WRITE,
-                                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
-                                        -1, 0));
+    constexpr size_t HUGE_PAGE_SIZE = 2 * 1024 * 1024;
+    const size_t aligned_size = ((FINAL_POOL_SIZE + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE) * HUGE_PAGE_SIZE;
+
+    auto log_pool = static_cast<char*>(mmap(NULL, aligned_size,
+                                           PROT_READ | PROT_WRITE,
+                                           MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
+                                           -1, 0));
     if (log_pool == MAP_FAILED) {
         perror("mmap hugepages failed, falling back to standard pages");
         log_pool = static_cast<char*>(aligned_alloc(4096, FINAL_POOL_SIZE));
@@ -431,7 +434,10 @@ void run_follower(const unsigned int node_id) {
 
     if (rdma_create_qp(id, pd, &qp_attr)) throw std::runtime_error("rdma_create_qp failed");
 
-    auto log_pool = static_cast<char*>(mmap(NULL, FINAL_POOL_SIZE,
+    constexpr size_t HUGE_PAGE_SIZE = 2 * 1024 * 1024;
+    const size_t aligned_size = ((FINAL_POOL_SIZE + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE) * HUGE_PAGE_SIZE;
+
+    auto log_pool = static_cast<char*>(mmap(NULL, aligned_size,
                                            PROT_READ | PROT_WRITE,
                                            MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
                                            -1, 0));
