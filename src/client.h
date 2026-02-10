@@ -13,14 +13,11 @@ inline void run_client(
 ) {
     const uintptr_t remote_slot = remote_addr + (client_id * CLIENT_SLOT_SIZE);
 
-    for (size_t i = 0; i < NUM_OPS_PER_CLIENT; i++) {
-        ibv_recv_wr rr {}, *bad_rr = nullptr;
-        rr.wr_id = i;
-        rr.sg_list = nullptr;
-        rr.num_sge = 0;
-        if (ibv_post_recv(id->qp, &rr, &bad_rr)) {
-            throw std::runtime_error("Failed to pre-post receive " + std::to_string(i));
-        }
+    constexpr int WINDOW_SIZE = QP_DEPTH / 2;
+    for (int i = 0; i < WINDOW_SIZE; i++) {
+        ibv_recv_wr rr{}, *bad;
+        rr.wr_id = 0;
+        ibv_post_recv(id->qp, &rr, &bad);
     }
 
     for (size_t i = 0; i < NUM_OPS_PER_CLIENT; i++) {
@@ -54,6 +51,10 @@ inline void run_client(
         if (wc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
             std::cout << "GOT RESPONSE FROM LEADER: " << i << std::endl;
         }
+
+        ibv_recv_wr rr{}, *bad_rr;
+        rr.wr_id = 0;
+        ibv_post_recv(id->qp, &rr, &bad_rr);
     }
 }
 
