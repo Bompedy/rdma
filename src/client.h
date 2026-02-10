@@ -14,6 +14,16 @@ inline void run_client(
     const uintptr_t remote_slot = remote_addr + (client_id * CLIENT_SLOT_SIZE);
 
     for (size_t i = 0; i < NUM_OPS_PER_CLIENT; i++) {
+        ibv_recv_wr rr {}, *bad_rr = nullptr;
+        rr.wr_id = i;
+        rr.sg_list = nullptr;
+        rr.num_sge = 0;
+        if (ibv_post_recv(id->qp, &rr, &bad_rr)) {
+            throw std::runtime_error("Failed to pre-post receive " + std::to_string(i));
+        }
+    }
+
+    for (size_t i = 0; i < NUM_OPS_PER_CLIENT; i++) {
         const char* local_buf = static_cast<char*>(local_mr->addr);
         ibv_send_wr swr {};
         ibv_sge sge {};
