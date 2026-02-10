@@ -37,7 +37,11 @@ inline void run_client(
         swr.imm_data = client_id;
 
         ibv_send_wr* bad_wr = nullptr;
-        if (ibv_post_send(id->qp, &swr, &bad_wr)) {
+        if (const auto send = ibv_post_send(id->qp, &swr, &bad_wr)) {
+            std::cerr << "ibv_post_send failed: " << strerror(send) << " (error code: " << send << ")" << std::endl;
+            if (bad_wr) {
+                std::cerr << "Failed at WR ID: " << bad_wr->wr_id << std::endl;
+            }
             throw std::runtime_error("ibv_post_send failed");
         }
 
