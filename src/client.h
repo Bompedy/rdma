@@ -11,6 +11,7 @@ inline void run_client(
     const uintptr_t remote_addr,
     const uint32_t remote_rkey
 ) {
+    bool got_ack = false;
     const uintptr_t remote_slot = remote_addr + (client_id * CLIENT_SLOT_SIZE);
 
     constexpr int WINDOW_SIZE = QP_DEPTH / 2;
@@ -21,6 +22,7 @@ inline void run_client(
     }
 
     for (size_t i = 0; i < NUM_OPS_PER_CLIENT; i++) {
+        got_ack = false;
         const char* local_buf = static_cast<char*>(local_mr->addr);
         ibv_send_wr swr {};
         ibv_sge sge {};
@@ -31,7 +33,7 @@ inline void run_client(
         swr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
         swr.sg_list = &sge;
         swr.num_sge = 1;
-        swr.send_flags = IBV_SEND_INLINE;
+        swr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
         swr.wr.rdma.remote_addr = remote_slot;
         swr.wr.rdma.rkey = remote_rkey;
         swr.imm_data = client_id;
@@ -45,20 +47,21 @@ inline void run_client(
             throw std::runtime_error("ibv_post_send failed");
         }
 
-        ibv_wc wc {};
-        while (ibv_poll_cq(cq, 1, &wc) == 0) {}
+        while (!got_ack) {
+            ibv_wc wc {};
+            while (ibv_poll_cq(cq, 1, &wc) == 0) {}
 
-        if (wc.status != IBV_WC_SUCCESS) {
-            throw std::runtime_error("Leader write failed or connection lost");
+            if (wc.status != IBV_WC_SUCCESS) {
+                throw std::runtime_error("Leader write failed or connection lost");
+            }
+
+            if (wc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
+                got_ack = true;
+                ibv_recv_wr rr{}, *bad_rr;
+                rr.wr_id = 0;
+                ibv_post_recv(id->qp, &rr, &bad_rr);
+            }
         }
-
-        if (wc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
-            // std::cout << "GOT RESPONSE FROM LEADER: " << i << std::endl;
-        }
-
-        ibv_recv_wr rr{}, *bad_rr;
-        rr.wr_id = 0;
-        ibv_post_recv(id->qp, &rr, &bad_rr);
     }
 }
 
