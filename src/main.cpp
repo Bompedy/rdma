@@ -32,11 +32,21 @@ unsigned int get_uint_env(const std::string& name) {
     }
 }
 
-struct Peer {
+enum class ConnType : uint8_t { FOLLOWER, CLIENT, LEADER };
+struct ConnPrivateData {
+    uintptr_t addr;
+    uint32_t rkey;
     uint32_t node_id;
-    rdma_cm_id* id;
-    uintptr_t remote_log_base;
-    uint32_t remote_rkey;
+    ConnType type;
+
+} __attribute__((packed));
+
+struct RemoteConnection {
+    uint32_t id;
+    rdma_cm_id* cm_id;
+    uintptr_t remote_addr;
+    uint32_t rkey;
+    ConnType type;
 };
 
 constexpr uint16_t RDMA_PORT = 6969;
@@ -51,59 +61,33 @@ constexpr size_t NUM_OPS = 1000;
 constexpr size_t NUM_CLIENTS = 7;
 constexpr size_t HUGE_PAGE_SIZE = 2 * 1024 * 1024;
 constexpr size_t ALIGNED_SIZE = ((FINAL_POOL_SIZE + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE) * HUGE_PAGE_SIZE;
-//
-// constexpr size_t PIPE_DEPTH = 64;
-// constexpr size_t MAX_PEERS = 3;
-//
-// alignas(64) std::array<std::array<uint32_t, PIPE_DEPTH>, MAX_PEERS> COMMIT_VALUES;
-// std::array<std::array<ibv_send_wr, PIPE_DEPTH>, MAX_PEERS> LOG_WRS;
-// std::array<std::array<ibv_sge, PIPE_DEPTH>, MAX_PEERS> LOG_SGES;
-// std::array<std::array<ibv_send_wr, PIPE_DEPTH>, MAX_PEERS> COMMIT_WRS;
-// std::array<std::array<ibv_sge, PIPE_DEPTH>, MAX_PEERS> COMMIT_SGES;
 
-// ibv_send_wr* build_propose_wr(
-//     const uint32_t log_index,
-//     const Peer& peer,
-//     const char* local_log,
-//     const ibv_mr* mr,
-//     ibv_send_wr* next_wr
-// ) {
-//     const uint32_t slot = log_index % PIPE_DEPTH;
-//     ibv_send_wr& swr = LOG_WRS[peer.node_id][slot];
-//     ibv_sge& sge = LOG_SGES[peer.node_id][slot];
-//
-//     const char* current_entry = local_log + (slot * ENTRY_SIZE);
-//     sge.addr = reinterpret_cast<uintptr_t>(current_entry);
-//     sge.length = ENTRY_SIZE;
-//     sge.lkey = mr->lkey;
-//
-//     swr.wr_id = log_index;
-//     swr.opcode = IBV_WR_RDMA_WRITE;
-//     swr.sg_list = &sge;
-//     swr.num_sge = 1;
-//     swr.send_flags = IBV_SEND_SIGNALED;
-//     swr.next = next_wr;
-//
-//     swr.wr.rdma.remote_addr = peer.remote_log_base + (slot * ENTRY_SIZE);
-//     swr.wr.rdma.rkey = peer.remote_rkey;
-//     return &swr;
-// }
+void* allocate_rdma_buffer() {
+    void* ptr = mmap(nullptr, ALIGNED_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+    if (ptr == MAP_FAILED) {
+        std::cerr << "[memory] HugePage allocation failed, falling back to aligned_alloc\n";
+        ptr = aligned_alloc(4096, ALIGNED_SIZE);
+        if (!ptr) throw std::runtime_error("Critical failure: Could not allocate RDMA buffer.");
+    }
+    memset(ptr, 0, ALIGNED_SIZE);
+    return ptr;
+}
 
 void run_leader_sequential(
     const unsigned int node_id,
-    const std::vector<Peer>& peers,
+    const std::vector<RemoteConnection>& peers,
     const char* local_log,
     const ibv_mr* local_mr
 ) {
     const uint32_t majority = peers.size() - 1;
-    ibv_cq* cq = peers[1].id->qp->send_cq;
+    ibv_cq* cq = peers[1].cm_id->qp->send_cq;
     uint32_t current_index = 0;
 
     while (true) {
         const uint32_t slot = current_index % MAX_LOG_ENTRIES;
 
         for (const auto& peer : peers) {
-            if (peer.node_id == node_id || !peer.id) continue;
+            if (peer.id == node_id || !peer.id) continue;
 
             ibv_send_wr swr {};
             ibv_sge sge {};
@@ -119,12 +103,12 @@ void run_leader_sequential(
             swr.sg_list = &sge;
             swr.num_sge = 1;
             swr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
-            swr.wr.rdma.remote_addr = peer.remote_log_base + (slot * ENTRY_SIZE);
-            swr.wr.rdma.rkey = peer.remote_rkey;
+            swr.wr.rdma.remote_addr = peer.remote_addr + (slot * ENTRY_SIZE);
+            swr.wr.rdma.rkey = peer.rkey;
             swr.imm_data = htonl(current_index);
 
             ibv_send_wr* bad_wr;
-            ibv_post_send(peer.id->qp, &swr, &bad_wr);
+            ibv_post_send(peer.cm_id->qp, &swr, &bad_wr);
         }
 
         int acks = 0;
@@ -174,14 +158,6 @@ void run_follower_sequential(const unsigned int node_id, char* log_pool, ibv_cq*
     }
 }
 
-enum class ConnType : uint8_t { FOLLOWER, CLIENT };
-struct ConnPrivateData {
-    uintptr_t addr;
-    uint32_t rkey;
-    uint32_t node_id;
-    ConnType type;
-
-} __attribute__((packed));
 
 void run_clients() {
     std::vector<std::thread> workers;
@@ -222,6 +198,10 @@ void run_clients() {
             ibv_pd* pd = ibv_alloc_pd(id->verbs);
             ibv_cq* cq = ibv_create_cq(id->verbs, 16, nullptr, nullptr, 0);
 
+            char* client_mem = static_cast<char*>(allocate_rdma_buffer());
+            const ibv_mr* mr = ibv_reg_mr(pd, client_mem, FINAL_POOL_SIZE, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+            if (!mr) throw std::runtime_error("ibv_reg_mr failed");
+
             ibv_qp_init_attr qp_attr{};
             qp_attr.qp_type = IBV_QPT_RC;
             qp_attr.send_cq = cq;
@@ -233,28 +213,41 @@ void run_clients() {
 
             if (rdma_create_qp(id, pd, &qp_attr)) return;
 
-            ConnPrivateData my_info{};
-            my_info.node_id = static_cast<uint32_t>(i);
-            my_info.type = ConnType::CLIENT;
-            my_info.addr = 0;
-            my_info.rkey = 0;
+            ConnPrivateData private_data{};
+            private_data.node_id = static_cast<uint32_t>(i);
+            private_data.type = ConnType::CLIENT;
+            private_data.addr = reinterpret_cast<uintptr_t>(client_mem);
+            private_data.rkey = mr->rkey;
 
             rdma_conn_param param{};
-            param.private_data = &my_info;
-            param.private_data_len = sizeof(my_info);
+            param.private_data = &private_data;
+            param.private_data_len = sizeof(private_data);
             param.responder_resources = 1;
             param.initiator_depth = 1;
 
             if (rdma_connect(id, &param)) return;
-
             if (rdma_get_cm_event(ec, &event)) return;
             if (event->event != RDMA_CM_EVENT_ESTABLISHED) {
                 rdma_ack_cm_event(event);
                 return;
             }
+
+            uintptr_t leader_pool_addr = 0;
+            uint32_t leader_rkey = 0;
+
+            if (event->param.conn.private_data &&
+                event->param.conn.private_data_len >= sizeof(ConnPrivateData)) {
+                auto* creds = static_cast<const ConnPrivateData*>(event->param.conn.private_data);
+                leader_pool_addr = creds->addr;
+                leader_rkey = creds->rkey;
+
+                std::cout << "[client " << i << "] Leader gave me access to pool at 0x" << std::hex << leader_pool_addr << std::dec << " with rkey " << leader_rkey << "\n";
+            }
+
             rdma_ack_cm_event(event);
 
             std::cout << "[client " << i << "] Connected to Leader!\n";
+            
 
             while (true) {
                 std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -270,8 +263,8 @@ void run_clients() {
 void run_leader(const uint32_t node_id) {
     std::cout << "[leader] starting\n";
 
-    std::vector<Peer> peers(CLUSTER_NODES.size());
-    std::vector<rdma_cm_id*> client_ids;
+    std::vector<RemoteConnection> peers(CLUSTER_NODES.size());
+    std::vector<RemoteConnection> clients(NUM_CLIENTS);
 
     const uint32_t expected_followers = CLUSTER_NODES.size() - 1;
 
@@ -297,9 +290,18 @@ void run_leader(const uint32_t node_id) {
 
     ibv_pd* pd = nullptr;
     ibv_cq* cq = nullptr;
+    ibv_mr* log_mr = nullptr;
+    ibv_mr* client_mr = nullptr;
 
     uint32_t followers_connected = 0;
     uint32_t clients_connected = 0;
+
+    char* log_pool = static_cast<char*>(allocate_rdma_buffer());
+    char* client_pool = static_cast<char*>(allocate_rdma_buffer());
+
+    ConnPrivateData leader_creds{};
+    leader_creds.node_id = node_id;
+    leader_creds.type = ConnType::LEADER;
 
     while (followers_connected < expected_followers || clients_connected < NUM_CLIENTS) {
         rdma_cm_event* event = nullptr;
@@ -324,6 +326,13 @@ void run_leader(const uint32_t node_id) {
                 if (!pd) throw std::runtime_error("ibv_alloc_pd failed");
                 cq = ibv_create_cq(id->verbs, 8192, nullptr, nullptr, 0);
                 if (!cq) throw std::runtime_error("ibv_create_cq failed");
+
+                log_mr = ibv_reg_mr(pd, log_pool, ALIGNED_SIZE, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
+                client_mr = ibv_reg_mr(pd, client_pool, ALIGNED_SIZE, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
+                if (!log_mr || !client_mr) throw std::runtime_error("MR registration failed");
+
+                leader_creds.addr = reinterpret_cast<uintptr_t>(client_pool);
+                leader_creds.rkey = client_mr->rkey;
             }
 
             ibv_qp_init_attr qp_attr{};
@@ -344,7 +353,14 @@ void run_leader(const uint32_t node_id) {
                 continue;
             }
 
+
             rdma_conn_param accept_params{};
+            if (incoming->type == ConnType::CLIENT) {
+                accept_params.responder_resources = 1;
+                accept_params.initiator_depth = 1;
+                accept_params.private_data = &leader_creds;
+                accept_params.private_data_len = sizeof(leader_creds);
+            }
             if (rdma_accept(id, &accept_params)) {
                 perror("rdma_accept");
                 rdma_destroy_qp(id);
@@ -354,11 +370,12 @@ void run_leader(const uint32_t node_id) {
 
             if (incoming->type == ConnType::FOLLOWER) {
                 const uint32_t nid = incoming->node_id;
-                peers[nid] = Peer{nid, id, incoming->addr, incoming->rkey};
+                peers[nid] = RemoteConnection{nid, id, incoming->addr, incoming->rkey, incoming->type};
                 followers_connected++;
                 std::cout << "[leader] Connected Follower Node: " << nid << "\n";
             } else if (incoming->type == ConnType::CLIENT) {
-                client_ids.push_back(id);
+                const uint32_t nid = incoming->node_id;
+                clients[nid] = RemoteConnection{nid, id, incoming->addr, incoming->rkey, incoming->type};
                 clients_connected++;
                 std::cout << "[leader] Connected Client (" << clients_connected << "/" << NUM_CLIENTS << ")\n";
             }
@@ -367,28 +384,7 @@ void run_leader(const uint32_t node_id) {
         rdma_ack_cm_event(event);
     }
 
-    void* raw_mem = mmap(NULL, ALIGNED_SIZE,
-                         PROT_READ | PROT_WRITE,
-                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
-                         -1, 0);
-
-    char* log_pool = nullptr;
-    if (raw_mem == MAP_FAILED) {
-        perror("[leader] mmap hugepages failed, falling back to standard pages");
-        log_pool = static_cast<char*>(aligned_alloc(4096, FINAL_POOL_SIZE));
-        if (!log_pool) throw std::runtime_error("Failed to allocate log_pool");
-    } else {
-        log_pool = static_cast<char*>(raw_mem);
-    }
-
-    memset(log_pool, 0, FINAL_POOL_SIZE);
-
-    // Register memory for RDMA access
-    const ibv_mr* mr = ibv_reg_mr(pd, log_pool, FINAL_POOL_SIZE, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
-    if (!mr) throw std::runtime_error("ibv_reg_mr failed");
-
-    std::cout << "[leader] All nodes and clients connected. Registering log at "
-              << std::hex << (uintptr_t)log_pool << std::dec << "\n";
+    std::cout << "[leader] All nodes and clients connected. Registering log at " << std::hex << reinterpret_cast<uintptr_t>(log_pool) << std::dec << "\n";
 
     // Enter the main sequential replication loop
     // run_leader_sequential(node_id, peers, log_pool, mr);
@@ -446,17 +442,7 @@ void run_follower(const unsigned int node_id) {
 
     if (rdma_create_qp(id, pd, &qp_attr)) throw std::runtime_error("rdma_create_qp failed");
 
-    auto log_pool = static_cast<char*>(mmap(NULL, ALIGNED_SIZE,
-                                           PROT_READ | PROT_WRITE,
-                                           MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
-                                           -1, 0));
-    if (log_pool == MAP_FAILED) {
-        perror("mmap hugepages failed, falling back to standard pages");
-        log_pool = static_cast<char*>(aligned_alloc(4096, FINAL_POOL_SIZE));
-        if (!log_pool) throw std::runtime_error("Failed to allocate log_pool");
-    }
-    memset(log_pool, 0, FINAL_POOL_SIZE);
-
+    char* log_pool = static_cast<char*>(allocate_rdma_buffer());
     const ibv_mr* mr = ibv_reg_mr(pd, log_pool, FINAL_POOL_SIZE, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
     if (!mr) throw std::runtime_error("ibv_reg_mr failed");
 
