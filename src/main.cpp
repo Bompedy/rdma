@@ -247,7 +247,7 @@ void run_clients() {
             rdma_ack_cm_event(event);
 
             std::cout << "[client " << i << "] Connected to Leader!\n";
-            
+
 
             while (true) {
                 std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -386,6 +386,9 @@ void run_leader(const uint32_t node_id) {
 
     std::cout << "[leader] All nodes and clients connected. Registering log at " << std::hex << reinterpret_cast<uintptr_t>(log_pool) << std::dec << "\n";
 
+    while (true) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
     // Enter the main sequential replication loop
     // run_leader_sequential(node_id, peers, log_pool, mr);
 }
