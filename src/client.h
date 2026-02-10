@@ -1,21 +1,59 @@
 #pragma once
+#include <latch>
 
-void run_client(
-    uint32_t client_id,
-    rdma_cm_id* id,
+#include "temp.h"
+
+inline void run_client(
+    const uint32_t client_id,
+    const rdma_cm_id* id,
     ibv_cq* cq,
-    ibv_mr* local_mr,
-    uintptr_t remote_addr,
-    uint32_t remote_rkey
+    const ibv_mr* local_mr,
+    const uintptr_t remote_addr,
+    const uint32_t remote_rkey
 ) {
+    const uintptr_t remote_slot = remote_addr + (client_id * CLIENT_SLOT_SIZE);
 
+    for (size_t i = 0; i < NUM_OPS_PER_CLIENT; i++) {
+        const char* local_buf = static_cast<char*>(local_mr->addr);
+        ibv_send_wr swr {};
+        ibv_sge sge {};
+        sge.addr = reinterpret_cast<uintptr_t>(local_buf);
+        sge.length = ENTRY_SIZE;
+        sge.lkey = local_mr->lkey;
+        swr.wr_id = client_id;
+        swr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+        swr.sg_list = &sge;
+        swr.num_sge = 1;
+        swr.send_flags = IBV_SEND_INLINE;
+        swr.wr.rdma.remote_addr = remote_slot;
+        swr.wr.rdma.rkey = remote_rkey;
+        swr.imm_data = client_id;
+
+        ibv_send_wr* bad_wr = nullptr;
+        if (ibv_post_send(id->qp, &swr, &bad_wr)) {
+            throw std::runtime_error("ibv_post_send failed");
+        }
+
+        ibv_wc wc {};
+        while (ibv_poll_cq(cq, 1, &wc) == 0) {}
+
+        if (wc.status != IBV_WC_SUCCESS) {
+            throw std::runtime_error("Leader write failed or connection lost");
+        }
+
+        if (wc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
+            std::cout << "GOT RESPONSE FROM LEADER" << std::endl;
+        }
+    }
 }
 
 inline void run_clients() {
     std::vector<std::thread> workers;
+    std::latch start_latch(NUM_CLIENTS + 1);
 
+    workers.reserve(NUM_CLIENTS);
     for (int i = 0; i < NUM_CLIENTS; i++) {
-        workers.emplace_back([i]() {
+        workers.emplace_back([i, &start_latch]() {
             std::cout << "[client " << i << "] starting\n";
 
             rdma_event_channel* ec = rdma_create_event_channel();
@@ -62,6 +100,7 @@ inline void run_clients() {
             qp_attr.cap.max_recv_wr = QP_DEPTH;
             qp_attr.cap.max_send_sge = 1;
             qp_attr.cap.max_recv_sge = 1;
+            qp_attr.cap.max_inline_data = MAX_INLINE_DEPTH;
 
             if (rdma_create_qp(id, pd, &qp_attr)) return;
 
@@ -92,19 +131,21 @@ inline void run_clients() {
                 auto* creds = static_cast<const ConnPrivateData*>(event->param.conn.private_data);
                 leader_pool_addr = creds->addr;
                 leader_rkey = creds->rkey;
-
                 std::cout << "[client " << i << "] Leader gave me access to pool at 0x" << std::hex << leader_pool_addr << std::dec << " with rkey " << leader_rkey << "\n";
             }
 
             rdma_ack_cm_event(event);
-
             std::cout << "[client " << i << "] Connected to Leader!\n";
-
+            start_latch.arrive_and_wait();
             run_client(i, id, cq, const_cast<ibv_mr*>(mr), leader_pool_addr, leader_rkey);
         });
     }
 
+    start_latch.arrive_and_wait();
+    const auto start_time = std::chrono::high_resolution_clock::now();
+
     for (auto& worker : workers) {
         worker.join();
     }
+    const auto end_time = std::chrono::high_resolution_clock::now();
 }

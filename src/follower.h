@@ -80,7 +80,7 @@ inline void run_follower(const unsigned int node_id) {
     qp_attr.cap.max_recv_wr = QP_DEPTH;
     qp_attr.cap.max_send_sge = 1;
     qp_attr.cap.max_recv_sge = 1;
-    qp_attr.cap.max_inline_data = 64;
+    qp_attr.cap.max_inline_data = MAX_INLINE_DEPTH;
 
     if (rdma_create_qp(id, pd, &qp_attr)) throw std::runtime_error("rdma_create_qp failed");
 

@@ -17,15 +17,15 @@
 
 int main() {
     try {
-        cpu_set_t cpuset;
-        CPU_ZERO(&cpuset);
-        CPU_SET(1, &cpuset);
-        pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
-
         if (get_uint_env("IS_CLIENT") != 0) {
             std::cout << "Starting as a client!" << std::endl;
             run_clients();
         } else {
+            cpu_set_t cpuset;
+            CPU_ZERO(&cpuset);
+            CPU_SET(1, &cpuset);
+            pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+
             const uint32_t node_id = get_uint_env("NODE_ID");
             if (node_id == 0) run_leader(node_id);
             else run_follower(node_id);

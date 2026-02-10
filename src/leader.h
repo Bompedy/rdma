@@ -1,57 +1,89 @@
 #pragma once
+#include "temp.h"
 
 inline void run_leader_sequential(
     const unsigned int node_id,
     const std::vector<RemoteConnection>& peers,
+    const std::vector<RemoteConnection>& clients,
     const char* local_log,
     const ibv_mr* local_mr,
     const char* client_pool,
     const ibv_mr* client_mr
 ) {
-    const uint32_t majority = peers.size() - 1;
+    // const uint32_t majority = peers.size() - 1;
     ibv_cq* cq = peers[1].cm_id->qp->send_cq;
-    uint32_t current_index = 0;
+    // uint32_t current_index = 0;
+
+    for (int i = 0; i < NUM_CLIENTS; i++) {
+        ibv_recv_wr wr{}, *bad_wr = nullptr;
+        wr.wr_id = i;
+        wr.sg_list = nullptr;
+        wr.num_sge = 0;
+
+        if (ibv_post_recv(clients[i].cm_id->qp, &wr, &bad_wr)) {
+            throw std::runtime_error("Failed to post initial recv");
+        }
+    }
+
+
 
     while (true) {
-        const uint32_t slot = current_index % MAX_LOG_ENTRIES;
-
-        for (const auto& peer : peers) {
-            if (peer.id == node_id || !peer.id) continue;
-
-            ibv_send_wr swr {};
-            ibv_sge sge {};
-
-            const_cast<char*>(local_log + (slot * ENTRY_SIZE))[ENTRY_SIZE - 1] = 1;
-
-            sge.addr = reinterpret_cast<uintptr_t>(local_log + (slot * ENTRY_SIZE));
-            sge.length = ENTRY_SIZE;
-            sge.lkey = local_mr->lkey;
-
-            swr.wr_id = current_index;
-            swr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
-            swr.sg_list = &sge;
-            swr.num_sge = 1;
-            swr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
-            swr.wr.rdma.remote_addr = peer.remote_addr + (slot * ENTRY_SIZE);
-            swr.wr.rdma.rkey = peer.rkey;
-            swr.imm_data = htonl(current_index);
-
-            ibv_send_wr* bad_wr;
-            ibv_post_send(peer.cm_id->qp, &swr, &bad_wr);
-        }
-
-        int acks = 0;
-        while (acks < majority) {
-            ibv_wc wc[16];
-            const int n = ibv_poll_cq(cq, 16, wc);
-            for (int i = 0; i < n; ++i) {
-                if (wc[i].status == IBV_WC_SUCCESS && wc[i].wr_id == current_index) {
-                    acks++;
+        ibv_wc wc[16];
+        const int n = ibv_poll_cq(cq, 16, wc);
+        for (int i = 0; i < n; ++i) {
+            if (wc[i].status != IBV_WC_SUCCESS) {
+                throw std::runtime_error("Failed to post and poll completion");
+            }
+            if (wc[i].opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
+                const uint32_t client_id = wc->imm_data;
+                std::cout << "Client " << client_id << " just wrote to the pool!" << std::endl;
+                ibv_recv_wr next_wr{}, *next_bad = nullptr;
+                next_wr.wr_id = client_id;
+                if (ibv_post_recv(clients[client_id].cm_id->qp, &next_wr, &next_bad)) {
+                    throw std::runtime_error("Failed to post next recv");
                 }
             }
         }
 
-        current_index++;
+        // const uint32_t slot = current_index % MAX_LOG_ENTRIES;
+        //
+        // for (const auto& peer : peers) {
+        //     if (peer.id == node_id || !peer.id) continue;
+        //
+        //     ibv_send_wr swr {};
+        //     ibv_sge sge {};
+        //
+        //     const_cast<char*>(local_log + (slot * ENTRY_SIZE))[ENTRY_SIZE - 1] = 1;
+        //
+        //     sge.addr = reinterpret_cast<uintptr_t>(local_log + (slot * ENTRY_SIZE));
+        //     sge.length = ENTRY_SIZE;
+        //     sge.lkey = local_mr->lkey;
+        //
+        //     swr.wr_id = current_index;
+        //     swr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+        //     swr.sg_list = &sge;
+        //     swr.num_sge = 1;
+        //     swr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
+        //     swr.wr.rdma.remote_addr = peer.remote_addr + (slot * ENTRY_SIZE);
+        //     swr.wr.rdma.rkey = peer.rkey;
+        //     swr.imm_data = htonl(current_index);
+        //
+        //     ibv_send_wr* bad_wr;
+        //     ibv_post_send(peer.cm_id->qp, &swr, &bad_wr);
+        // }
+
+        // int acks = 0;
+        // while (acks < majority) {
+        //     ibv_wc wc[16];
+        //     const int n = ibv_poll_cq(cq, 16, wc);
+        //     for (int i = 0; i < n; ++i) {
+        //         if (wc[i].status == IBV_WC_SUCCESS && wc[i].wr_id == current_index) {
+        //             acks++;
+        //         }
+        //     }
+        // }
+
+        // current_index++;
     }
 }
 
@@ -138,7 +170,7 @@ inline void run_leader(const uint32_t node_id) {
             qp_attr.cap.max_recv_wr = QP_DEPTH;
             qp_attr.cap.max_send_sge = 1;
             qp_attr.cap.max_recv_sge = 1;
-            qp_attr.cap.max_inline_data = 64;
+            qp_attr.cap.max_inline_data = MAX_INLINE_DEPTH;
             qp_attr.sq_sig_all = 0;
 
             if (rdma_create_qp(id, pd, &qp_attr)) {

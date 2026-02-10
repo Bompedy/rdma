@@ -43,11 +43,16 @@ constexpr size_t ENTRY_SIZE = 8;
 constexpr size_t TOTAL_POOL_SIZE = MAX_LOG_ENTRIES * ENTRY_SIZE;
 constexpr size_t METADATA_SIZE = 4096;
 constexpr size_t FINAL_POOL_SIZE = TOTAL_POOL_SIZE + METADATA_SIZE;
-constexpr size_t NUM_OPS = 1000;
-constexpr size_t NUM_CLIENTS = 7;
 constexpr size_t HUGE_PAGE_SIZE = 2 * 1024 * 1024;
 constexpr size_t ALIGNED_SIZE = ((FINAL_POOL_SIZE + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE) * HUGE_PAGE_SIZE;
 constexpr size_t QP_DEPTH = 2048;
+constexpr size_t MAX_INLINE_DEPTH = 64;
+constexpr size_t CLIENT_SLOT_SIZE = 1024;
+
+constexpr size_t NUM_OPS = 1000;
+constexpr size_t NUM_CLIENTS = 1;
+constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / NUM_CLIENTS;
+constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * NUM_CLIENTS;
 
 inline void* allocate_rdma_buffer() {
     void* ptr = mmap(nullptr, ALIGNED_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
