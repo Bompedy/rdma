@@ -36,7 +36,10 @@ inline void run_leader_sequential(
         for (int i = 0; i < n; ++i) {
             const auto current_wc = wc[i];
             if (current_wc.status != IBV_WC_SUCCESS) {
-                throw std::runtime_error("Failed to post and poll completion");
+                std::cerr << "RDMA Error: " << ibv_wc_status_str(current_wc.status)
+                   << " Opcode: " << current_wc.opcode
+                   << " WR_ID: " << current_wc.wr_id << std::endl;
+                throw std::runtime_error("RDMA completion failure");
             }
             if (current_wc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
                 const uint32_t client_id = current_wc.imm_data;
