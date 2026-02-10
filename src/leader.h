@@ -35,8 +35,8 @@ inline void run_leader_sequential(
                 throw std::runtime_error("Failed to post and poll completion");
             }
             if (wc[i].opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
-                const uint32_t client_id = wc->imm_data;
-                const uint32_t test_id = wc->wr_id;
+                const uint32_t client_id = wc[i].imm_data;
+                const uint32_t test_id = wc[i].wr_id;
                 std::cout << "Client " << client_id << "vs " << test_id << " just wrote to the pool!" << std::endl;
                 ibv_recv_wr next_wr{}, *next_bad = nullptr;
                 next_wr.wr_id = client_id;
