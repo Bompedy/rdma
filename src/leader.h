@@ -56,7 +56,7 @@ inline void run_leader_sequential(
                         swr.wr_id = current_index;
                         swr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
                         swr.num_sge = 0;
-                        swr.send_flags = IBV_SEND_INLINE;
+                        swr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
                         swr.wr.rdma.remote_addr = 0;
                         swr.wr.rdma.rkey = 0;
                         swr.imm_data = current_index;
