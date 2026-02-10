@@ -58,11 +58,11 @@ inline void run_leader_sequential(
                         swr.wr.rdma.rkey = 0;
                         swr.imm_data = current_index;
                         ibv_send_wr* bad_wr;
+                        std::cout << "Got majority for going to write back for " << current_index << std::endl;
                         if (ibv_post_send(clients[inflight_client_id].cm_id->qp, &swr, &bad_wr)) {
                             throw std::runtime_error("Failed to ack back to client");
                         }
 
-                        std::cout << "Got majority for: " << current_index << std::endl;
                         should_write = true;
                         acks = 0;
                         current_index++;
