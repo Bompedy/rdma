@@ -112,46 +112,6 @@ inline void run_leader_sequential(
 
             should_write = false;
         }
-
-        // const uint32_t slot = current_index % MAX_LOG_ENTRIES;
-        //
-        // for (const auto& peer : peers) {
-        //     if (peer.id == node_id || !peer.id) continue;
-        //
-        //     ibv_send_wr swr {};
-        //     ibv_sge sge {};
-        //
-        //     const_cast<char*>(local_log + (slot * ENTRY_SIZE))[ENTRY_SIZE - 1] = 1;
-        //
-        //     sge.addr = reinterpret_cast<uintptr_t>(local_log + (slot * ENTRY_SIZE));
-        //     sge.length = ENTRY_SIZE;
-        //     sge.lkey = local_mr->lkey;
-        //
-        //     swr.wr_id = current_index;
-        //     swr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
-        //     swr.sg_list = &sge;
-        //     swr.num_sge = 1;
-        //     swr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
-        //     swr.wr.rdma.remote_addr = peer.remote_addr + (slot * ENTRY_SIZE);
-        //     swr.wr.rdma.rkey = peer.rkey;
-        //     swr.imm_data = htonl(current_index);
-        //
-        //     ibv_send_wr* bad_wr;
-        //     ibv_post_send(peer.cm_id->qp, &swr, &bad_wr);
-        // }
-
-        // int acks = 0;
-        // while (acks < majority) {
-        //     ibv_wc wc[16];
-        //     const int n = ibv_poll_cq(cq, 16, wc);
-        //     for (int i = 0; i < n; ++i) {
-        //         if (wc[i].status == IBV_WC_SUCCESS && wc[i].wr_id == current_index) {
-        //             acks++;
-        //         }
-        //     }
-        // }
-
-        // current_index++;
     }
 }
 

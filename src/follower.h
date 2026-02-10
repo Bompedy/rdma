@@ -25,10 +25,12 @@ inline void run_follower_sequential(const unsigned int node_id, char* log_pool, 
             ibv_recv_wr* bad_rr;
             ibv_post_recv(qp, &rr, &bad_rr);
 
+            std::cout << "Follower processed: " << current_index << std::endl;
             current_index++;
-            if (current_index % 100000 == 0) {
-                std::cout << "[Follower] Processed up to: " << received_index << "\n";
-            }
+            //
+            // if (current_index % 100000 == 0) {
+            //     std::cout << "[Follower] Processed up to: " << received_index << "\n";
+            // }
         }
     }
 }
