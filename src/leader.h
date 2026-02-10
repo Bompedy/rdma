@@ -36,7 +36,8 @@ inline void run_leader_sequential(
             }
             if (wc[i].opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
                 const uint32_t client_id = wc->imm_data;
-                std::cout << "Client " << client_id << " just wrote to the pool!" << std::endl;
+                const uint32_t test_id = wc->wr_id;
+                std::cout << "Client " << client_id << "vs " << test_id << " just wrote to the pool!" << std::endl;
                 ibv_recv_wr next_wr{}, *next_bad = nullptr;
                 next_wr.wr_id = client_id;
                 if (ibv_post_recv(clients[client_id].cm_id->qp, &next_wr, &next_bad)) {
