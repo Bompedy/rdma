@@ -60,7 +60,7 @@ inline void run_leader_sequential(
                         swr.wr.rdma.remote_addr = 0;
                         swr.wr.rdma.rkey = 0;
                         swr.imm_data = current_index;
-                        std::cout << "Got majority for going to write back for " << current_index << std::endl;
+                        // std::cout << "Got majority for going to write back for " << current_index << std::endl;
                         ibv_send_wr* bad_wr = nullptr;
                         if (const auto send = ibv_post_send(clients[inflight_client_id].cm_id->qp, &swr, &bad_wr)) {
                             std::cerr << "ibv_post_send failed: " << strerror(send) << " (error code: " << send << ")" << std::endl;
