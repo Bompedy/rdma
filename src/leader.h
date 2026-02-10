@@ -213,5 +213,5 @@ inline void run_leader(const uint32_t node_id) {
 
     std::cout << "[leader] All nodes and clients connected. Registering log at " << std::hex << reinterpret_cast<uintptr_t>(log_pool) << std::dec << "\n";
 
-    run_leader_sequential(node_id, peers, log_pool, log_mr, client_pool, client_mr);
+    run_leader_sequential(node_id, peers, clients, log_pool, log_mr, client_pool, client_mr);
 }
