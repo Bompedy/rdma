@@ -60,10 +60,14 @@ inline void run_leader_sequential(
                         swr.wr.rdma.remote_addr = 0;
                         swr.wr.rdma.rkey = 0;
                         swr.imm_data = current_index;
-                        ibv_send_wr* bad_wr;
                         std::cout << "Got majority for going to write back for " << current_index << std::endl;
-                        if (ibv_post_send(clients[inflight_client_id].cm_id->qp, &swr, &bad_wr)) {
-                            throw std::runtime_error("Failed to ack back to client");
+                        ibv_send_wr* bad_wr = nullptr;
+                        if (const auto send = ibv_post_send(clients[inflight_client_id].cm_id->qp, &swr, &bad_wr)) {
+                            std::cerr << "ibv_post_send failed: " << strerror(send) << " (error code: " << send << ")" << std::endl;
+                            if (bad_wr) {
+                                std::cerr << "Failed at WR ID: " << bad_wr->wr_id << std::endl;
+                            }
+                            throw std::runtime_error("ibv_post_send failed");
                         }
 
                         should_write = true;
