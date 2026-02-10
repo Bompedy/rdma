@@ -14,7 +14,6 @@ inline void run_client(
     const uintptr_t remote_slot = remote_addr + (client_id * CLIENT_SLOT_SIZE);
 
     for (size_t i = 0; i < NUM_OPS_PER_CLIENT; i++) {
-        std::cout << "Writing out with client_id " << client_id << std::endl;
         const char* local_buf = static_cast<char*>(local_mr->addr);
         ibv_send_wr swr {};
         ibv_sge sge {};
@@ -43,7 +42,7 @@ inline void run_client(
         }
 
         if (wc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
-            std::cout << "GOT RESPONSE FROM LEADER" << std::endl;
+            std::cout << "GOT RESPONSE FROM LEADER: " << i << std::endl;
         }
     }
 }

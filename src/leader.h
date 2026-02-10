@@ -1,32 +1,6 @@
 #pragma once
 #include "temp.h"
 
-template<typename T, size_t Size>
-class Queue {
-    std::array<T, Size> buffer{};
-    size_t head = 0;
-    size_t tail = 0;
-    size_t count = 0;
-
-public:
-    void push(T item) {
-        if (count == Size) throw std::runtime_error("Queue full");
-        buffer[tail] = item;
-        tail = (tail + 1) % Size;
-        count++;
-    }
-
-    bool pop(T& item) {
-        if (count == 0) return false;
-        item = buffer[head];
-        head = (head + 1) % Size;
-        count--;
-        return true;
-    }
-
-    [[nodiscard]] size_t size() const { return count; }
-};
-
 inline void run_leader_sequential(
     const unsigned int node_id,
     const std::vector<RemoteConnection>& peers,
@@ -53,6 +27,7 @@ inline void run_leader_sequential(
 
     Queue<uint32_t, NUM_CLIENTS> pending_requests;
     bool should_write = true;
+    uint32_t inflight_client_id;
     int acks = 0;
 
     while (true) {
@@ -74,8 +49,20 @@ inline void run_leader_sequential(
             } else if (current_wc.opcode == IBV_WC_RDMA_WRITE) {
                 if (current_wc.wr_id == current_index) {
                     if (++acks >= majority) {
+                        ibv_send_wr swr {};
+                        swr.wr_id = current_index;
+                        swr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+                        swr.num_sge = 0;
+                        swr.send_flags = IBV_SEND_INLINE;
+                        swr.wr.rdma.remote_addr = 0;
+                        swr.wr.rdma.rkey = 0;
+                        swr.imm_data = current_index;
+                        ibv_send_wr* bad_wr;
+                        if (ibv_post_send(clients[inflight_client_id].cm_id->qp, &swr, &bad_wr)) {
+                            throw std::runtime_error("Failed to ack back to client");
+                        }
+
                         std::cout << "Got majority for: " << current_index << std::endl;
-                        // ack back to client
                         should_write = true;
                         acks = 0;
                         current_index++;
@@ -85,8 +72,7 @@ inline void run_leader_sequential(
         }
 
         if (should_write) {
-            uint32_t client_id;
-            if (!pending_requests.pop(client_id)) continue;
+            if (!pending_requests.pop(inflight_client_id)) continue;
             const uint32_t slot = current_index % MAX_LOG_ENTRIES;
             // copy client memory into our local log
 
@@ -105,9 +91,11 @@ inline void run_leader_sequential(
                 swr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
                 swr.wr.rdma.remote_addr = peer.remote_addr + (slot * ENTRY_SIZE);
                 swr.wr.rdma.rkey = peer.rkey;
-                swr.imm_data = htonl(current_index);
+                swr.imm_data = current_index;
                 ibv_send_wr* bad_wr;
-                ibv_post_send(peer.cm_id->qp, &swr, &bad_wr);
+                if (ibv_post_send(peer.cm_id->qp, &swr, &bad_wr)) {
+                    throw std::runtime_error("Failed to propose to followers");
+                }
             }
 
             should_write = false;
@@ -161,8 +149,7 @@ inline void run_leader(const uint32_t node_id) {
     while (followers_connected < expected_followers || clients_connected < NUM_CLIENTS) {
         rdma_cm_event* event = nullptr;
         if (rdma_get_cm_event(ec, &event)) {
-            perror("rdma_get_cm_event");
-            break;
+            throw std::runtime_error("rdma_get_cm_event");
         }
 
         if (event->event == RDMA_CM_EVENT_CONNECT_REQUEST) {
@@ -217,10 +204,9 @@ inline void run_leader(const uint32_t node_id) {
                 accept_params.private_data_len = sizeof(leader_creds);
             }
             if (rdma_accept(id, &accept_params)) {
-                perror("rdma_accept");
                 rdma_destroy_qp(id);
                 rdma_ack_cm_event(event);
-                continue;
+                throw std::runtime_error("rdma_accept failed");
             }
 
             if (incoming->type == ConnType::FOLLOWER) {

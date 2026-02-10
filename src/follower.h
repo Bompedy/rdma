@@ -103,19 +103,15 @@ inline void run_follower(const unsigned int node_id) {
     param.initiator_depth = 1;
 
     if (rdma_connect(id, &param)) {
-        perror("rdma_connect");
-        std::exit(1);
+        throw std::runtime_error("rdma_connect");
     }
 
     if (rdma_get_cm_event(ec, &event)) {
-        perror("rdma_get_cm_event(connect)");
-        std::exit(1);
+        throw std::runtime_error("rdma_get_cm_event(connect) failed");
     }
 
     if (event->event != RDMA_CM_EVENT_ESTABLISHED) {
-        std::cerr << "Connection NOT established. Event: " << event->event << std::endl;
-        rdma_ack_cm_event(event);
-        exit(1);
+        throw std::runtime_error("rdma_ack_cm_event");
     }
 
     std::cout << "[follower " << node_id << "] Connected and Established!\n";

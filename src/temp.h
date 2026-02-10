@@ -49,7 +49,7 @@ constexpr size_t QP_DEPTH = 2048;
 constexpr size_t MAX_INLINE_DEPTH = 64;
 constexpr size_t CLIENT_SLOT_SIZE = 1024;
 
-constexpr size_t NUM_OPS = 1000;
+constexpr size_t NUM_OPS = 100;
 constexpr size_t NUM_CLIENTS = 10;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / NUM_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * NUM_CLIENTS;
@@ -64,3 +64,29 @@ inline void* allocate_rdma_buffer() {
     memset(ptr, 0, ALIGNED_SIZE);
     return ptr;
 }
+
+template<typename T, size_t Size>
+class Queue {
+    std::array<T, Size> buffer{};
+    size_t head = 0;
+    size_t tail = 0;
+    size_t count = 0;
+
+public:
+    void push(T item) {
+        if (count == Size) throw std::runtime_error("Queue full");
+        buffer[tail] = item;
+        tail = (tail + 1) % Size;
+        count++;
+    }
+
+    bool pop(T& item) {
+        if (count == 0) return false;
+        item = buffer[head];
+        head = (head + 1) % Size;
+        count--;
+        return true;
+    }
+
+    [[nodiscard]] size_t size() const { return count; }
+};
