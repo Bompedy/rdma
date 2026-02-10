@@ -14,6 +14,7 @@ inline void run_client(
     const uintptr_t remote_slot = remote_addr + (client_id * CLIENT_SLOT_SIZE);
 
     for (size_t i = 0; i < NUM_OPS_PER_CLIENT; i++) {
+        std::cout << "Writing out with client_id " << client_id << std::endl;
         const char* local_buf = static_cast<char*>(local_mr->addr);
         ibv_send_wr swr {};
         ibv_sge sge {};
@@ -131,7 +132,7 @@ inline void run_clients() {
                 auto* creds = static_cast<const ConnPrivateData*>(event->param.conn.private_data);
                 leader_pool_addr = creds->addr;
                 leader_rkey = creds->rkey;
-                std::cout << "[client " << i << "] Leader gave me access to pool at 0x" << std::hex << leader_pool_addr << std::dec << " with rkey " << leader_rkey << "\n";
+                // std::cout << "[client " << i << "] Leader gave me access to pool at 0x" << std::hex << leader_pool_addr << std::dec << " with rkey " << leader_rkey << "\n";
             }
 
             rdma_ack_cm_event(event);
