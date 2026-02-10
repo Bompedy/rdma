@@ -49,7 +49,7 @@ inline void run_client(
         }
 
         if (wc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
-            std::cout << "GOT RESPONSE FROM LEADER: " << i << std::endl;
+            // std::cout << "GOT RESPONSE FROM LEADER: " << i << std::endl;
         }
 
         ibv_recv_wr rr{}, *bad_rr;
