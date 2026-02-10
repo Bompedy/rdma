@@ -74,9 +74,11 @@ inline void run_leader_sequential(
             } else if (current_wc.opcode == IBV_WC_RDMA_WRITE) {
                 if (current_wc.wr_id == current_index) {
                     if (++acks >= majority) {
+                        std::cout << "Got majority for: " << current_index << std::endl;
                         // ack back to client
                         should_write = true;
                         acks = 0;
+                        current_index++;
                     }
                 }
             }
@@ -109,7 +111,6 @@ inline void run_leader_sequential(
             }
 
             should_write = false;
-            current_index++;
         }
 
         // const uint32_t slot = current_index % MAX_LOG_ENTRIES;
