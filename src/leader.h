@@ -72,7 +72,9 @@ inline void run_leader_sequential(
         }
 
         if (should_write) {
-            if (!pending_requests.pop(inflight_client_id)) continue;
+            uint32_t client_id;
+            if (!pending_requests.pop(client_id)) continue;
+            inflight_client_id = client_id;
             const uint32_t slot = current_index % MAX_LOG_ENTRIES;
             // copy client memory into our local log
 
