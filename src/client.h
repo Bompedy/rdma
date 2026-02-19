@@ -34,44 +34,62 @@ inline void run_synra_clients() {
 
 
                 for (int node_id = 0; node_id < CLUSTER_NODES.size(); node_id++) {
+                    std::cout << "[DEBUG Client " << i << "] Connecting to " << CLUSTER_NODES[node_id] << "..." <<
+                        std::endl;
+
                     rdma_cm_id* id = nullptr;
-                    if (rdma_create_id(ec, &id, nullptr, RDMA_PS_TCP)) return;
+                    if (rdma_create_id(ec, &id, nullptr, RDMA_PS_TCP)) {
+                        throw std::runtime_error("rdma_create_id failed for node " + std::to_string(node_id));
+                    }
 
                     sockaddr_in addr{};
                     addr.sin_family = AF_INET;
                     addr.sin_port = htons(RDMA_PORT);
-                    inet_pton(AF_INET, CLUSTER_NODES[node_id].c_str(), &addr.sin_addr);
+                    if (inet_pton(AF_INET, CLUSTER_NODES[node_id].c_str(), &addr.sin_addr) <= 0) {
+                        throw std::runtime_error("Invalid IP address format: " + CLUSTER_NODES[node_id]);
+                    }
 
-                    if (rdma_resolve_addr(id, nullptr, reinterpret_cast<sockaddr*>(&addr), 2000)) return;
+                    if (rdma_resolve_addr(id, nullptr, reinterpret_cast<sockaddr*>(&addr), 2000)) {
+                        throw std::runtime_error("rdma_resolve_addr failed for node " + std::to_string(node_id));
+                    }
 
-                    auto wait_event = [&](const rdma_cm_event_type expected) -> rdma_cm_event* {
+                    auto wait_event = [&
+                        ](const rdma_cm_event_type expected, const std::string& step) -> rdma_cm_event* {
                         rdma_cm_event* event = nullptr;
-                        if (rdma_get_cm_event(ec, &event)) return nullptr;
+                        if (rdma_get_cm_event(ec, &event)) {
+                            throw std::runtime_error("rdma_get_cm_event failed during " + step);
+                        }
                         if (event->event != expected) {
+                            int status = event->status;
                             rdma_ack_cm_event(event);
-                            return nullptr;
+                            throw std::runtime_error("Expected " + step + " but got event ID: " +
+                                std::to_string(event->event) + " with status: " + std::to_string(status));
                         }
                         return event;
                     };
 
-                    auto* ev_addr = wait_event(RDMA_CM_EVENT_ADDR_RESOLVED);
-                    if (!ev_addr) return;
+                    auto* ev_addr = wait_event(RDMA_CM_EVENT_ADDR_RESOLVED, "ADDR_RESOLVE");
                     rdma_ack_cm_event(ev_addr);
 
-                    if (rdma_resolve_route(id, 2000)) return;
-                    auto* ev_route = wait_event(RDMA_CM_EVENT_ROUTE_RESOLVED);
-                    if (!ev_route) return;
+                    if (rdma_resolve_route(id, 2000)) {
+                        throw std::runtime_error("rdma_resolve_route failed for node " + std::to_string(node_id));
+                    }
+                    auto* ev_route = wait_event(RDMA_CM_EVENT_ROUTE_RESOLVED, "ROUTE_RESOLVE");
                     rdma_ack_cm_event(ev_route);
 
                     if (pd == nullptr) {
                         pd = ibv_alloc_pd(id->verbs);
-                        cq = ibv_create_cq(id->verbs, QP_DEPTH * CLUSTER_NODES.size(), nullptr, nullptr, 0);
+                        if (!pd) throw std::runtime_error("ibv_alloc_pd failed");
+
+                        cq = ibv_create_cq(id->verbs, QP_DEPTH * (int)CLUSTER_NODES.size(), nullptr, nullptr, 0);
+                        if (!cq) throw std::runtime_error("ibv_create_cq failed");
+
                         mr = ibv_reg_mr(pd, client_mem, FINAL_POOL_SIZE,
                                         IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
+                        if (!mr) throw std::runtime_error("ibv_reg_mr failed");
                     }
 
                     ibv_qp_init_attr qp_attr{};
-
                     qp_attr.qp_type = IBV_QPT_RC;
                     qp_attr.send_cq = cq;
                     qp_attr.recv_cq = cq;
@@ -80,12 +98,14 @@ inline void run_synra_clients() {
                     qp_attr.cap.max_send_sge = 1;
                     qp_attr.cap.max_recv_sge = 1;
                     qp_attr.cap.max_inline_data = MAX_INLINE_DEPTH;
-                    qp_attr.sq_sig_all = 0;
 
-                    if (rdma_create_qp(id, pd, &qp_attr)) return;
+                    if (rdma_create_qp(id, pd, &qp_attr)) {
+                        throw std::runtime_error("rdma_create_qp failed for node " + std::to_string(node_id));
+                    }
 
                     ConnPrivateData priv{};
                     priv.node_id = i;
+                    priv.type = ConnType::CLIENT;
                     priv.addr = reinterpret_cast<uintptr_t>(client_mem);
                     priv.rkey = mr->rkey;
 
@@ -95,9 +115,11 @@ inline void run_synra_clients() {
                     param.responder_resources = 1;
                     param.initiator_depth = 1;
 
-                    if (rdma_connect(id, &param)) return;
-                    auto* ev_conn = wait_event(RDMA_CM_EVENT_ESTABLISHED);
-                    if (!ev_conn) return;
+                    if (rdma_connect(id, &param)) {
+                        throw std::runtime_error("rdma_connect call failed for node " + std::to_string(node_id));
+                    }
+
+                    auto* ev_conn = wait_event(RDMA_CM_EVENT_ESTABLISHED, "ESTABLISHED");
 
                     uintptr_t r_addr = 0;
                     uint32_t r_key = 0;
@@ -106,10 +128,14 @@ inline void run_synra_clients() {
                         r_addr = remote_creds->addr;
                         r_key = remote_creds->rkey;
                     }
+                    else {
+                        rdma_ack_cm_event(ev_conn);
+                        throw std::runtime_error("No private data received from node " + std::to_string(node_id));
+                    }
                     rdma_ack_cm_event(ev_conn);
 
                     connections.push_back({id, r_addr, r_key});
-                    std::cout << "[Client " << i << "] Connected to Node " << node_id << "\n";
+                    std::cout << "[Client " << i << "] SUCCESS: Connected to Node " << node_id << std::endl;
 
                     start_latch.count_down();
                 }
@@ -129,8 +155,8 @@ inline void run_synra_clients() {
         });
     }
 
-    std::cout << "All clients connected. Starting benchmark..." << std::endl;
     start_latch.arrive_and_wait();
+    std::cout << "All clients connected. Starting benchmark..." << std::endl;
     const auto start_time = std::chrono::steady_clock::now();
 
     for (auto& worker : workers) {
