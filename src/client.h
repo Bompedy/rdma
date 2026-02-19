@@ -53,8 +53,7 @@ inline void run_synra_clients() {
                         throw std::runtime_error("rdma_resolve_addr failed for node " + std::to_string(node_id));
                     }
 
-                    auto wait_event = [&
-                        ](const rdma_cm_event_type expected, const std::string& step) -> rdma_cm_event* {
+                    auto wait_event = [&](const rdma_cm_event_type expected, const std::string& step) -> rdma_cm_event* {
                         rdma_cm_event* event = nullptr;
                         if (rdma_get_cm_event(ec, &event)) {
                             throw std::runtime_error("rdma_get_cm_event failed during " + step);
@@ -85,7 +84,7 @@ inline void run_synra_clients() {
                         if (!cq) throw std::runtime_error("ibv_create_cq failed");
 
                         mr = ibv_reg_mr(pd, client_mem, FINAL_POOL_SIZE,
-                                        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
+                                        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
                         if (!mr) throw std::runtime_error("ibv_reg_mr failed");
                     }
 
@@ -127,8 +126,7 @@ inline void run_synra_clients() {
                         auto* remote_creds = static_cast<const ConnPrivateData*>(ev_conn->param.conn.private_data);
                         r_addr = remote_creds->addr;
                         r_key = remote_creds->rkey;
-                    }
-                    else {
+                    } else {
                         rdma_ack_cm_event(ev_conn);
                         throw std::runtime_error("No private data received from node " + std::to_string(node_id));
                     }

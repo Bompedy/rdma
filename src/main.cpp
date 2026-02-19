@@ -20,7 +20,8 @@ int main() {
     try {
         if (get_uint_env("IS_CLIENT") != 0) {
             std::cout << "Starting synra clients!" << std::endl;
-            run_synra_clients();
+            run_mu_clients();
+            // run_synra_clients();
         } else {
             cpu_set_t cpuset;
             CPU_ZERO(&cpuset);
