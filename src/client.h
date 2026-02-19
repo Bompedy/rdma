@@ -44,7 +44,7 @@ inline void run_synra_clients() {
 
                     if (rdma_resolve_addr(id, nullptr, reinterpret_cast<sockaddr*>(&addr), 2000)) return;
 
-                    auto wait_event = [&](rdma_cm_event_type expected) -> rdma_cm_event* {
+                    auto wait_event = [&](const rdma_cm_event_type expected) -> rdma_cm_event* {
                         rdma_cm_event* event = nullptr;
                         if (rdma_get_cm_event(ec, &event)) return nullptr;
                         if (event->event != expected) {
@@ -54,12 +54,14 @@ inline void run_synra_clients() {
                         return event;
                     };
 
-                    if (!wait_event(RDMA_CM_EVENT_ADDR_RESOLVED)) return;
-                    rdma_ack_cm_event(nullptr);
+                    auto* ev_addr = wait_event(RDMA_CM_EVENT_ADDR_RESOLVED);
+                    if (!ev_addr) return;
+                    rdma_ack_cm_event(ev_addr);
 
                     if (rdma_resolve_route(id, 2000)) return;
-                    if (!wait_event(RDMA_CM_EVENT_ROUTE_RESOLVED)) return;
-                    rdma_ack_cm_event(nullptr);
+                    auto* ev_route = wait_event(RDMA_CM_EVENT_ROUTE_RESOLVED);
+                    if (!ev_route) return;
+                    rdma_ack_cm_event(ev_route);
 
                     if (pd == nullptr) {
                         pd = ibv_alloc_pd(id->verbs);
@@ -94,16 +96,17 @@ inline void run_synra_clients() {
                     param.initiator_depth = 1;
 
                     if (rdma_connect(id, &param)) return;
-                    auto* ev = wait_event(RDMA_CM_EVENT_ESTABLISHED);
+                    auto* ev_conn = wait_event(RDMA_CM_EVENT_ESTABLISHED);
+                    if (!ev_conn) return;
 
                     uintptr_t r_addr = 0;
                     uint32_t r_key = 0;
-                    if (ev->param.conn.private_data) {
-                        auto* remote_creds = static_cast<const ConnPrivateData*>(ev->param.conn.private_data);
+                    if (ev_conn->param.conn.private_data) {
+                        auto* remote_creds = static_cast<const ConnPrivateData*>(ev_conn->param.conn.private_data);
                         r_addr = remote_creds->addr;
                         r_key = remote_creds->rkey;
                     }
-                    rdma_ack_cm_event(ev);
+                    rdma_ack_cm_event(ev_conn);
 
                     connections.push_back({id, r_addr, r_key});
                     std::cout << "[Client " << i << "] Connected to Node " << node_id << "\n";
