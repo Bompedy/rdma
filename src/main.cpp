@@ -29,9 +29,9 @@ int main() {
             pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
 
             const uint32_t node_id = get_uint_env("NODE_ID");
-            run_synra_node(node_id);
-            // if (node_id == 0) run_leader(node_id);
-            // else run_synra_node(node_id);
+            // run_synra_node(node_id);
+            if (node_id == 0) run_leader(node_id);
+            else run_follower_mu(node_id);
         }
     } catch (const std::exception& e) {
         std::cerr << "[error] " << e.what() << "\n";
