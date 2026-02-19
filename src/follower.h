@@ -112,7 +112,7 @@ inline void run_follower_mu(const unsigned int node_id) {
     }
 
     if (event->event != RDMA_CM_EVENT_ESTABLISHED) {
-        throw std::runtime_error("rdma_ack_cm_event");
+        throw std::runtime_error("rdma_ack_cm_event hum");
     }
 
     std::cout << "[follower " << node_id << "] Connected and Established!\n";
