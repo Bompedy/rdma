@@ -1,7 +1,8 @@
 #pragma once
+
 #include "temp.h"
 
-inline void run_follower_sequential(const unsigned int node_id, char* log_pool, ibv_cq* cq, ibv_qp* qp) {
+inline void run_follower_sequential_mu(const unsigned int node_id, char* log_pool, ibv_cq* cq, ibv_qp* qp) {
     uint32_t current_index = 0;
 
     for (int i = 0; i < 512; i++) {
@@ -35,7 +36,7 @@ inline void run_follower_sequential(const unsigned int node_id, char* log_pool, 
     }
 }
 
-inline void run_follower(const unsigned int node_id) {
+inline void run_follower_mu(const unsigned int node_id) {
     std::cout << "[follower " << node_id << "] starting\n";
 
     rdma_event_channel* ec = rdma_create_event_channel();
@@ -117,5 +118,5 @@ inline void run_follower(const unsigned int node_id) {
     std::cout << "[follower " << node_id << "] Connected and Established!\n";
     rdma_ack_cm_event(event);
 
-    run_follower_sequential(node_id, log_pool, id->qp->send_cq, id->qp);
+    run_follower_sequential_mu(node_id, log_pool, id->qp->send_cq, id->qp);
 }

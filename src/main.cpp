@@ -13,13 +13,14 @@
 #include "leader.h"
 #include "follower.h"
 #include "client.h"
+#include "synra.h"
 
 
 int main() {
     try {
         if (get_uint_env("IS_CLIENT") != 0) {
-            std::cout << "Starting as a client!" << std::endl;
-            run_clients();
+            std::cout << "Starting synra clients!" << std::endl;
+            run_synra_clients();
         } else {
             cpu_set_t cpuset;
             CPU_ZERO(&cpuset);
@@ -27,8 +28,9 @@ int main() {
             pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
 
             const uint32_t node_id = get_uint_env("NODE_ID");
-            if (node_id == 0) run_leader(node_id);
-            else run_follower(node_id);
+            run_synra_node(node_id);
+            // if (node_id == 0) run_leader(node_id);
+            // else run_synra_node(node_id);
         }
     } catch (const std::exception& e) {
         std::cerr << "[error] " << e.what() << "\n";
