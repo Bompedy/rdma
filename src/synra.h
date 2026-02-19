@@ -53,6 +53,9 @@ inline void run_synra_node(const uint32_t node_id) {
             throw std::runtime_error("rdma_get_cm_event");
         }
 
+        std::cout << "[DEBUG] Received Event ID: " << event->event
+              << " Status: " << event->status << std::endl;
+
         if (event->event == RDMA_CM_EVENT_CONNECT_REQUEST) {
             rdma_cm_id* id = event->id;
             const auto* incoming = (ConnPrivateData*)event->param.conn.private_data;
