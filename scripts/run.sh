@@ -21,7 +21,7 @@ cd /local/rdma || exit
 git pull
 mkdir -p build && cd build
 rm -f CMakeCache.txt
-cmake -DCMAKE_C_COMPILER=/usr/bin/clang-22 -DCMAKE_CXX_COMPILER=/usr/bin/clang++-22 ..
+cmake -DCMAKE_C_COMPILER=/usr/bin/clang -DCMAKE_CXX_COMPILER=/usr/bin/clang++ ..
 
 # 4. Compile
 make -j
