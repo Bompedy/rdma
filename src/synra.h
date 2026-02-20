@@ -20,7 +20,7 @@ inline void run_synra_node(const uint32_t node_id) {
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(RDMA_PORT);
-    inet_pton(AF_INET, CLUSTER_NODES[node_id].c_str(), &addr.sin_addr);
+    addr.sin_addr.s_addr = INADDR_ANY;
 
     if (rdma_bind_addr(listener, reinterpret_cast<sockaddr*>(&addr)))
         throw std::runtime_error("rdma_bind_addr failed");
