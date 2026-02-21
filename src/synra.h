@@ -2,6 +2,48 @@
 
 #include "temp.h"
 
+inline void run_synra_handler(
+    const uint32_t node_id,
+    std::vector<RemoteConnection>& peers,
+    std::vector<RemoteConnection>& clients,
+    char* log_pool,
+    ibv_mr* log_mr,
+    char* client_pool,
+    ibv_mr* client_mr,
+    ibv_cq* cq
+) {
+    std::cout << "[synra handler] Entering main execution loop\n";
+
+    ibv_wc wc[32];
+    while (true) {
+        const int n = ibv_poll_cq(cq, 32, wc);
+        if (n < 0) throw std::runtime_error("ibv_poll_cq failed");
+
+        for (int i = 0; i < n; i++) {
+            if (wc[i].status != IBV_WC_SUCCESS) {
+                std::cerr << "Work Completion Error: " << ibv_wc_status_str(wc[i].status) << " (opcode: " << wc[i].opcode << ")\n";
+                continue;
+            }
+
+            switch (wc[i].opcode) {
+                case IBV_WC_RECV:
+                    std::cout << "Received a message from a client/peer!\n";
+
+                    break;
+
+                case IBV_WC_RDMA_WRITE:
+                    break;
+
+                case IBV_WC_SEND:
+                    break;
+
+                default:
+                    break;
+            }
+        }
+    }
+}
+
 inline void run_synra_node(const uint32_t node_id) {
     std::cout << "[synra node] starting\n";
 
@@ -128,9 +170,14 @@ inline void run_synra_node(const uint32_t node_id) {
         rdma_ack_cm_event(event);
     }
 
-    std::cout << "[synra node] All nodes and clients connected. Registering log at " << std::hex << reinterpret_cast<uintptr_t>(log_pool) << std::dec << "\n";
-    while (true) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    }
-    // run_leader_sequential(node_id, peers, clients, log_pool, log_mr, client_pool, client_mr);
+    run_synra_handler(
+        node_id,
+        peers,
+        clients,
+        log_pool,
+        log_mr,
+        client_pool,
+        client_mr,
+        cq
+    );
 }
