@@ -19,44 +19,75 @@ inline void run_synra_faa_client(
     uint64_t* latencies
 ) {
     if (connections.empty()) return;
-    const auto& target_node = connections[0];
+    ibv_wc wc_repro[32];
+    const auto& sequencer = connections[0];
+    ibv_sge ticket_sge{};
+    ticket_sge.addr = reinterpret_cast<uintptr_t>(mr->addr);
+    ticket_sge.length = 8;
+    ticket_sge.lkey = mr->lkey;
 
-    ibv_sge sge{};
-    sge.addr = reinterpret_cast<uintptr_t>(mr->addr);
-    sge.length = 8;
-    sge.lkey = mr->lkey;
+    uint64_t* local_data_ptr = reinterpret_cast<uint64_t*>(mr->addr) + 1;
+    *local_data_ptr = 0xDEADBEEF;
 
-    for (int op = 0; op < 2; ++op) {
+    ibv_sge write_sge{};
+    write_sge.addr = reinterpret_cast<uintptr_t>(local_data_ptr);
+    write_sge.length = 8;
+    write_sge.lkey = mr->lkey;
+
+    for (int op = 0; op < NUM_OPS_PER_CLIENT; ++op) {
         auto start_time = std::chrono::high_resolution_clock::now();
 
-        ibv_send_wr wr{}, *bad_wr = nullptr;
-        wr.wr_id = client_id;
-        wr.sg_list = &sge;
-        wr.num_sge = 1;
-        wr.opcode = IBV_WR_ATOMIC_FETCH_AND_ADD;
-        wr.send_flags = IBV_SEND_SIGNALED;
+        ibv_send_wr faa_wr{}, *bad_faa_wr = nullptr;
+        faa_wr.wr_id = 0xFFFF;
+        faa_wr.sg_list = &ticket_sge;
+        faa_wr.num_sge = 1;
+        faa_wr.opcode = IBV_WR_ATOMIC_FETCH_AND_ADD;
+        faa_wr.send_flags = IBV_SEND_SIGNALED;
+        faa_wr.wr.atomic.remote_addr = sequencer.addr + (ALIGNED_SIZE - 8);
+        faa_wr.wr.atomic.rkey = sequencer.rkey;
+        faa_wr.wr.atomic.compare_add = 1;
 
-        wr.wr.atomic.remote_addr = target_node.addr + (ALIGNED_SIZE - 8);
-        wr.wr.atomic.rkey = target_node.rkey;
-        wr.wr.atomic.compare_add = 1;
-        wr.wr.atomic.swap = 0;
-
-        if (ibv_post_send(target_node.id->qp, &wr, &bad_wr)) {
-            throw std::runtime_error("failed to post atomic operation");
+        if (ibv_post_send(sequencer.id->qp, &faa_wr, &bad_faa_wr)) {
+            throw std::runtime_error("FAA post failed");
         }
 
         ibv_wc wc{};
-        while (ibv_poll_cq(cq, 1, &wc) == 0) {
-        };
+        while (ibv_poll_cq(cq, 1, &wc) == 0) {}
+        if (wc.status != IBV_WC_SUCCESS) throw std::runtime_error("FAA failed");
 
-        if (wc.status != IBV_WC_SUCCESS) {
-            throw std::runtime_error("failed to poll atomic operation");
+        uint64_t my_ticket = *reinterpret_cast<uint64_t*>(mr->addr);
+        uint64_t log_offset = my_ticket * 8;
+
+        for (size_t i = 0; i < connections.size(); ++i) {
+            ibv_send_wr wr{}, *bad_wr = nullptr;
+            wr.wr_id = (my_ticket << 32) | (i & 0xFFFFFFFF);
+            wr.sg_list = &write_sge;
+            wr.num_sge = 1;
+            wr.opcode = IBV_WR_RDMA_WRITE;
+            wr.send_flags = IBV_SEND_SIGNALED;
+            wr.wr.rdma.remote_addr = connections[i].addr + log_offset;
+            wr.wr.rdma.rkey = connections[i].rkey;
+
+            if (ibv_post_send(connections[i].id->qp, &wr, &bad_wr)) {
+                throw std::runtime_error("Replication post failed");
+            }
+        }
+
+        int acks = 0;
+        while (acks < QUORUM) {
+            const uint32_t pulled = ibv_poll_cq(cq, 32, wc_repro);
+            for (int j = 0; j < pulled; ++j) {
+                if (wc_repro[j].status != IBV_WC_SUCCESS) continue;
+                if (uint64_t completion_ticket = wc_repro[j].wr_id >> 32; completion_ticket == my_ticket) {
+                    acks++;
+                } else {
+                    std::cout << "[DEBUG] Received stray ack for slot: " << completion_ticket << std::endl;
+                }
+            }
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
-        latencies[0] = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count();
-        uint64_t my_ticket = *reinterpret_cast<uint64_t*>(mr->addr);
-        std::cout << "I got ticket number: " << my_ticket << std::endl;
+        latencies[op] = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count();
     }
 }
 
