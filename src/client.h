@@ -96,12 +96,12 @@ inline void run_synra_faa_client(
                 if (completion_ticket == my_ticket) {
                     acks++;
                 } else {
-                    std::cout << "got stray ack here of: " << completion_ticket << std::endl;
+                    // std::cout << "got stray ack here of: " << completion_ticket << std::endl;
                 }
             }
         }
 
-        std::cout << "Moving forward on op: " << op << std::endl;
+        // std::cout << "Moving forward on op: " << op << std::endl;
         auto end_time = std::chrono::high_resolution_clock::now();
         latencies[op] = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count();
     }
