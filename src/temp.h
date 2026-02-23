@@ -40,7 +40,7 @@ struct RemoteConnection {
 
 constexpr uint16_t RDMA_PORT = 6969;
 
-constexpr size_t MAX_LOG_ENTRIES = 1000000;
+constexpr size_t MAX_LOG_ENTRIES = 10000000;
 constexpr size_t ENTRY_SIZE = 8;
 constexpr size_t TOTAL_POOL_SIZE = MAX_LOG_ENTRIES * ENTRY_SIZE;
 constexpr size_t METADATA_SIZE = 4096;
