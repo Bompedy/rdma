@@ -5,6 +5,61 @@
 
 #include "temp.h"
 
+struct RemoteNode {
+    rdma_cm_id* id;
+    uintptr_t addr;
+    uint32_t rkey;
+};
+
+inline void run_synra_faa_client(
+    int client_id,
+    const std::vector<RemoteNode>& connections,
+    ibv_cq* cq,
+    ibv_mr* mr,
+    uint64_t* latencies
+) {
+    if (connections.empty()) return;
+    const auto& target_node = connections[0];
+
+    ibv_sge sge{};
+    sge.addr = reinterpret_cast<uintptr_t>(mr->addr);
+    sge.length = 8;
+    sge.lkey = mr->lkey;
+
+    for (int op = 0; op < 2; ++op) {
+        auto start_time = std::chrono::high_resolution_clock::now();
+
+        ibv_send_wr wr{}, *bad_wr = nullptr;
+        wr.wr_id = client_id;
+        wr.sg_list = &sge;
+        wr.num_sge = 1;
+        wr.opcode = IBV_WR_ATOMIC_FETCH_AND_ADD;
+        wr.send_flags = IBV_SEND_SIGNALED;
+
+        wr.wr.atomic.remote_addr = target_node.addr + (ALIGNED_SIZE - 8);
+        wr.wr.atomic.rkey = target_node.rkey;
+        wr.wr.atomic.compare_add = 1;
+        wr.wr.atomic.swap = 0;
+
+        if (ibv_post_send(target_node.id->qp, &wr, &bad_wr)) {
+            throw std::runtime_error("failed to post atomic operation");
+        }
+
+        ibv_wc wc{};
+        while (ibv_poll_cq(cq, 1, &wc) == 0) {
+        };
+
+        if (wc.status != IBV_WC_SUCCESS) {
+            throw std::runtime_error("failed to poll atomic operation");
+        }
+
+        auto end_time = std::chrono::high_resolution_clock::now();
+        latencies[0] = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count();
+        uint64_t my_ticket = *reinterpret_cast<uint64_t*>(mr->addr);
+        std::cout << "I got ticket number: " << my_ticket << std::endl;
+    }
+}
+
 inline void run_synra_clients() {
     std::vector<std::thread> workers;
     auto all_latencies = std::make_unique<std::array<uint64_t, NUM_TOTAL_OPS>>();
@@ -14,12 +69,6 @@ inline void run_synra_clients() {
     workers.reserve(NUM_CLIENTS);
     for (int i = 0; i < NUM_CLIENTS; i++) {
         workers.emplace_back([i, &start_latch, &all_latencies]() {
-            struct RemoteNode {
-                rdma_cm_id* id;
-                uintptr_t addr;
-                uint32_t rkey;
-            };
-
             try {
                 std::vector<RemoteNode> connections;
                 rdma_event_channel* ec = rdma_create_event_channel();
@@ -141,12 +190,7 @@ inline void run_synra_clients() {
                 std::cout << "[Client " << i << "] Connected to all followers! " << "\n";
                 start_latch.wait();
                 uint64_t* latencies = &((*all_latencies)[i * NUM_OPS_PER_CLIENT]);
-                // You'll need to update run_client to handle a vector of IDs/Keys
-                // run_client_multi(i, connections, cq, mr, latencies);
-                while (true) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-                }
-
+                run_synra_faa_client(i, connections, cq, mr, latencies);
             } catch (const std::exception& e) {
                 std::cerr << "Thread " << i << " error: " << e.what() << "\n";
             }

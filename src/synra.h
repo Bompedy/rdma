@@ -8,8 +8,6 @@ inline void run_synra_handler(
     std::vector<RemoteConnection>& clients,
     char* log_pool,
     ibv_mr* log_mr,
-    char* client_pool,
-    ibv_mr* client_mr,
     ibv_cq* cq
 ) {
     std::cout << "[synra handler] Entering main execution loop\n";
@@ -75,13 +73,11 @@ inline void run_synra_node(const uint32_t node_id) {
     ibv_pd* pd = nullptr;
     ibv_cq* cq = nullptr;
     ibv_mr* log_mr = nullptr;
-    ibv_mr* client_mr = nullptr;
 
     uint32_t followers_connected = 0;
     uint32_t clients_connected = 0;
 
     char* log_pool = static_cast<char*>(allocate_rdma_buffer());
-    char* client_pool = static_cast<char*>(allocate_rdma_buffer());
 
     ConnPrivateData leader_creds{};
     leader_creds.node_id = node_id;
@@ -115,12 +111,11 @@ inline void run_synra_node(const uint32_t node_id) {
                 cq = ibv_create_cq(id->verbs, QP_DEPTH * 2, nullptr, nullptr, 0);
                 if (!cq) throw std::runtime_error("ibv_create_cq failed");
 
-                log_mr = ibv_reg_mr(pd, log_pool, ALIGNED_SIZE, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
-                client_mr = ibv_reg_mr(pd, client_pool, ALIGNED_SIZE, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
-                if (!log_mr || !client_mr) throw std::runtime_error("MR registration failed");
+                log_mr = ibv_reg_mr(pd, log_pool, ALIGNED_SIZE, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ| IBV_ACCESS_REMOTE_ATOMIC);
+                if (!log_mr) throw std::runtime_error("MR registration failed");
 
-                leader_creds.addr = reinterpret_cast<uintptr_t>(client_pool);
-                leader_creds.rkey = client_mr->rkey;
+                leader_creds.addr = reinterpret_cast<uintptr_t>(log_pool);
+                leader_creds.rkey = log_mr->rkey;
             }
 
             ibv_qp_init_attr qp_attr{};
@@ -176,8 +171,6 @@ inline void run_synra_node(const uint32_t node_id) {
         clients,
         log_pool,
         log_mr,
-        client_pool,
-        client_mr,
         cq
     );
 }
