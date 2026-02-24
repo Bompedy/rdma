@@ -52,7 +52,7 @@ constexpr size_t MAX_INLINE_DEPTH = 64;
 constexpr size_t CLIENT_SLOT_SIZE = 1024;
 
 constexpr size_t NUM_OPS = 5000000;
-constexpr size_t NUM_CLIENTS = 8;
+constexpr size_t NUM_CLIENTS = 16;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / NUM_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * NUM_CLIENTS;
 
