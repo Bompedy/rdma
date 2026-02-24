@@ -117,6 +117,9 @@ inline void run_synra_clients() {
     for (int i = 0; i < NUM_CLIENTS; i++) {
         workers.emplace_back([i, &start_latch, &all_latencies]() {
             try {
+                pin_thread_to_cpu(pick_cpu_for_client(i));
+
+
                 std::vector<RemoteNode> connections;
                 rdma_event_channel* ec = rdma_create_event_channel();
                 if (!ec) return;
@@ -305,11 +308,6 @@ inline void run_mu_client(
     const uint32_t remote_rkey,
     uint64_t* latencies
 ) {
-    cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
-    CPU_SET(client_id % std::thread::hardware_concurrency(), &cpuset);
-    pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
-
     bool got_ack = false;
     const uintptr_t remote_slot = remote_addr + (client_id * CLIENT_SLOT_SIZE);
 
@@ -377,6 +375,7 @@ inline void run_mu_clients() {
     for (int i = 0; i < NUM_CLIENTS; i++) {
         workers.emplace_back([i, &start_latch, &all_latencies]() {
             try {
+                pin_thread_to_cpu(pick_cpu_for_client(i));
                 std::cout << "[client " << i << "] starting\n";
 
                 rdma_event_channel* ec = rdma_create_event_channel();

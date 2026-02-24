@@ -23,11 +23,7 @@ int main() {
             // run_mu_clients();
             run_synra_clients();
         } else {
-            cpu_set_t cpuset;
-            CPU_ZERO(&cpuset);
-            CPU_SET(1, &cpuset);
-            pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
-
+            pin_thread_to_cpu(1);
             const uint32_t node_id = get_uint_env("NODE_ID");
             run_synra_node(node_id);
             // if (node_id == 0) run_leader(node_id);

@@ -52,7 +52,7 @@ constexpr size_t MAX_INLINE_DEPTH = 64;
 constexpr size_t CLIENT_SLOT_SIZE = 1024;
 
 constexpr size_t NUM_OPS = 5000000;
-constexpr size_t NUM_CLIENTS = 10;
+constexpr size_t NUM_CLIENTS = 8;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / NUM_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * NUM_CLIENTS;
 
@@ -92,3 +92,22 @@ public:
 
     [[nodiscard]] size_t size() const { return count; }
 };
+
+inline void pin_thread_to_cpu(const int cpu) {
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(cpu, &cpuset);
+    if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0) {
+        throw std::runtime_error("pthread_setaffinity_np failed");
+    }
+}
+
+inline int pick_cpu_for_client(const int client_id) {
+    static const int CPU_ORDER[16] = {
+        0,2,4,6,8,10,12,14,
+        1,3,5,7,9,11,13,15
+    };
+
+    constexpr int NUM_LOGICAL = 16;
+    return CPU_ORDER[client_id % NUM_LOGICAL];
+}
