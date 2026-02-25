@@ -166,13 +166,13 @@ inline void run_synra_tas_client(
             const int wins = commit_cas(op, next_slot, client_id, connections, cq, mr);
             if (wins >= QUORUM) {
                 std::cout << "We fast path won and advanced slot to: " << next_slot << std::endl;
-                advance_frontier(next_slot, connections, mr);
+                advance_frontier(next_slot, connections, mr, cq);
                 break;
             }
 
             if (learn_majority(op, next_slot, client_id, connections, cq, mr)) {
                 std::cout << "We slow path won and advanced slot to: " << next_slot << std::endl;
-                advance_frontier(next_slot, connections, mr);
+                advance_frontier(next_slot, connections, mr, cq);
                 break;
             } else {
                 std::cout << "We slow path lost on slot: " << max_val << std::endl;
