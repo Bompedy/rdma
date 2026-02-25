@@ -2,6 +2,7 @@
 #include <cmath>
 #include <iomanip>
 #include <latch>
+#include <map>
 
 #include "temp.h"
 
@@ -10,6 +11,220 @@ struct RemoteNode {
     uintptr_t addr;
     uint32_t rkey;
 };
+
+inline void run_synra_tas_client(
+    int client_id,
+    const std::vector<RemoteNode>& connections,
+    ibv_cq* cq,
+    ibv_mr* mr,
+    uint64_t* latencies
+) {
+    if (connections.empty()) return;
+
+    ibv_wc wc_batch[32];
+    uint64_t* remote_values = static_cast<uint64_t*>(mr->addr) + 10;
+
+    bool responded[connections.size()];
+    uint32_t counts[connections.size()];
+    std::fill_n(counts, connections.size(), 0);
+    std::fill_n(responded, connections.size(), false);
+
+    for (int op = 0; op < NUM_OPS_PER_CLIENT; ++op) {
+        auto start_time = std::chrono::high_resolution_clock::now();
+        while (true) {
+            constexpr long READ_ID = 0xABC000;
+            for (size_t i = 0; i < connections.size(); ++i) {
+                ibv_sge read_sge{};
+                read_sge.addr = reinterpret_cast<uintptr_t>(&remote_values[i]);
+                read_sge.length = 8;
+                read_sge.lkey = mr->lkey;
+
+                ibv_send_wr read_wr{}, *bad_read_wr = nullptr;
+                read_wr.wr_id = (static_cast<uint64_t>(op) << 32) | READ_ID | i;
+                read_wr.sg_list = &read_sge;
+                read_wr.num_sge = 1;
+                read_wr.opcode = IBV_WR_RDMA_READ;
+                read_wr.send_flags = IBV_SEND_SIGNALED;
+                read_wr.wr.rdma.remote_addr = connections[i].addr + (ALIGNED_SIZE - 8);
+                read_wr.wr.rdma.rkey = connections[i].rkey;
+
+                if (ibv_post_send(connections[i].id->qp, &read_wr, &bad_read_wr)) {
+                    throw std::runtime_error("Read post failed");
+                }
+            }
+
+            std::fill_n(responded, connections.size(), false);
+            int completed_reads = 0;
+            while (completed_reads < QUORUM) {
+                const int n = ibv_poll_cq(cq, 32, wc_batch);
+                for (int i = 0; i < n; i++) {
+                    if (wc_batch[i].status != IBV_WC_SUCCESS) continue;
+                    const uint64_t completion_op = wc_batch[i].wr_id >> 32;
+                    const uint64_t magic_tag = wc_batch[i].wr_id & 0xFFF000;
+                    if (magic_tag == READ_ID && completion_op == op) {
+                        const uint32_t node_idx = wc_batch[i].wr_id & 0xFFF;
+                        responded[node_idx] = true;
+                        completed_reads++;
+                    }
+                }
+            }
+
+            uint64_t max_val = 0;
+            for (size_t i = 0; i < connections.size(); ++i) {
+                if (responded[i] && remote_values[i] > max_val) {
+                    max_val = remote_values[i];
+                }
+            }
+            std::cout << "The max value is: " << max_val << std::endl;
+            if (max_val % 2 == 0) {
+                constexpr long CAS_ID = 0xDEF000;
+                const uint64_t next_slot = max_val + 1;
+                uint64_t* cas_results = static_cast<uint64_t*>(mr->addr) + 20;
+
+                for (size_t i = 0; i < connections.size(); ++i) {
+                    ibv_send_wr cas_wr{}, *bad_cas_wr = nullptr;
+                    ibv_sge cas_sge{};
+
+                    cas_sge.addr = reinterpret_cast<uintptr_t>(&cas_results[i]);
+                    cas_sge.length = 8;
+                    cas_sge.lkey = mr->lkey;
+
+                    cas_wr.wr_id = (static_cast<uint64_t>(op) << 32) | CAS_ID | i;
+                    cas_wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+                    cas_wr.send_flags = IBV_SEND_SIGNALED;
+                    cas_wr.sg_list = &cas_sge;
+                    cas_wr.num_sge = 1;
+
+                    cas_wr.wr.rdma.remote_addr = connections[i].addr + (next_slot * 8);
+                    cas_wr.wr.atomic.rkey = connections[i].rkey;
+                    cas_wr.wr.atomic.compare_add = 0;
+                    cas_wr.wr.atomic.swap = static_cast<uint64_t>(client_id);
+
+                    if (ibv_post_send(connections[i].id->qp, &cas_wr, &bad_cas_wr)) {
+                        throw std::runtime_error("CAS post failed");
+                    }
+                }
+
+                int wins = 0;
+                int cas_responses = 0;
+                while (cas_responses < QUORUM) {
+                    const int n = ibv_poll_cq(cq, 32, wc_batch);
+                    for (int j = 0; j < n; ++j) {
+                        if (wc_batch[j].status != IBV_WC_SUCCESS) continue;
+                        if ((wc_batch[j].wr_id >> 32) == op && (wc_batch[j].wr_id & 0xFFF000) == CAS_ID) {
+                            const uint32_t node_idx = wc_batch[j].wr_id & 0xFFF;
+                            cas_responses++;
+                            if (cas_results[node_idx] == 0) wins++;
+                        }
+                    }
+                }
+
+                if (wins >= QUORUM) {
+                    std::cout << "I won fast path. Register is 1." << std::endl;
+                    uint64_t* local_val = static_cast<uint64_t*>(mr->addr) + 30;
+                    *local_val = next_slot;
+
+                    for (size_t i = 0; i < connections.size(); ++i) {
+                        ibv_sge sge{};
+                        sge.addr = reinterpret_cast<uintptr_t>(local_val);
+                        sge.length = 8;
+                        sge.lkey = mr->lkey;
+
+                        ibv_send_wr wr{}, *bad_wr = nullptr;
+                        wr.wr_id = 0x111000 | i;
+                        wr.opcode = IBV_WR_RDMA_WRITE;
+                        wr.sg_list = &sge;
+                        wr.num_sge = 1;
+                        wr.send_flags = 0;
+                        wr.wr.rdma.remote_addr = connections[i].addr + (ALIGNED_SIZE - 8);
+                        wr.wr.rdma.rkey = connections[i].rkey;
+
+                        ibv_post_send(connections[i].id->qp, &wr, &bad_wr);
+                    }
+                    break;
+                }
+
+                std::cout << "Op " << op << ": No immediate CAS quorum. Reading to find majority..." << std::endl;
+
+                for (size_t i = 0; i < connections.size(); ++i) {
+                    ibv_send_wr read_slot_wr{}, *bad_wr = nullptr;
+                    ibv_sge sge{};
+                    sge.addr = reinterpret_cast<uintptr_t>(&cas_results[i]);
+                    sge.length = 8;
+                    sge.lkey = mr->lkey;
+
+                    read_slot_wr.wr_id = (static_cast<uint64_t>(op) << 32) | 0x999000 | i;
+                    read_slot_wr.opcode = IBV_WR_RDMA_READ;
+                    read_slot_wr.sg_list = &sge;
+                    read_slot_wr.num_sge = 1;
+                    read_slot_wr.send_flags = IBV_SEND_SIGNALED;
+                    read_slot_wr.wr.rdma.remote_addr = connections[i].addr + (next_slot * 8);
+                    read_slot_wr.wr.rdma.rkey = connections[i].rkey;
+                    ibv_post_send(connections[i].id->qp, &read_slot_wr, &bad_wr);
+                }
+
+                std::fill_n(counts, connections.size(), 0);
+                int reads_done = 0;
+                while (reads_done < connections.size()) {
+                    const int n = ibv_poll_cq(cq, 32, wc_batch);
+                    for (int j = 0; j < n; ++j) {
+                        if ((wc_batch[j].wr_id & 0xFFF000) == 0x999000) {
+                            uint32_t idx = wc_batch[j].wr_id & 0xFFF;
+                            counts[cas_results[idx]]++;
+                            reads_done++;
+                        }
+                    }
+                }
+
+
+                bool i_won = false;
+                bool someone_won = false;
+                for (int i = 0; i < connections.size(); ++i) {
+                    if (const uint32_t count = counts[i]; count >= QUORUM && i != 0) {
+                        someone_won = true;
+                        if (i == client_id) i_won = true;
+                        break;
+                    }
+                }
+
+                if (i_won) {
+                    uint64_t* local_val = static_cast<uint64_t*>(mr->addr) + 30;
+                    *local_val = next_slot;
+
+                    for (size_t i = 0; i < connections.size(); ++i) {
+                        ibv_sge sge{};
+                        sge.addr = reinterpret_cast<uintptr_t>(local_val);
+                        sge.length = 8;
+                        sge.lkey = mr->lkey;
+
+                        ibv_send_wr wr{}, *bad_wr = nullptr;
+                        wr.wr_id = 0x111000 | i;
+                        wr.opcode = IBV_WR_RDMA_WRITE;
+                        wr.sg_list = &sge;
+                        wr.num_sge = 1;
+                        wr.send_flags = 0;
+                        wr.wr.rdma.remote_addr = connections[i].addr + (ALIGNED_SIZE - 8);
+                        wr.wr.rdma.rkey = connections[i].rkey;
+
+                        ibv_post_send(connections[i].id->qp, &wr, &bad_wr);
+                    }
+                    std::cout << "Confirmed: I won. Register is 1." << std::endl;
+                    break;
+                }
+
+                if (someone_won) {
+                    std::cout << "Confirmed: Someone else won. Register is 1." << std::endl;
+                    break;
+                }
+            }
+
+            break;
+        }
+
+        auto end_time = std::chrono::high_resolution_clock::now();
+        latencies[op] = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count();
+    }
+}
 
 inline void run_synra_faa_client(
     int client_id,
@@ -240,7 +455,7 @@ inline void run_synra_clients() {
                 std::cout << "[Client " << i << "] Connected to all followers! " << "\n";
                 start_latch.wait();
                 uint64_t* latencies = &((*all_latencies)[i * NUM_OPS_PER_CLIENT]);
-                run_synra_faa_client(i, connections, cq, mr, latencies);
+                run_synra_tas_client(i, connections, cq, mr, latencies);
             } catch (const std::exception& e) {
                 std::cerr << "Thread " << i << " error: " << e.what() << "\n";
             }
