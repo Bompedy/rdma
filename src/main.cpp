@@ -19,8 +19,8 @@
 int main() {
     try {
         if (get_uint_env("IS_CLIENT") != 0) {
-            run_mu_clients();
-            // run_synra_clients();
+            // run_mu_clients();
+            run_synra_clients();
         } else {
             pin_thread_to_cpu(1);
             const uint32_t node_id = get_uint_env("NODE_ID");
