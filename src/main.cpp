@@ -10,10 +10,11 @@
 #include <netinet/in.h>
 #include <sys/mman.h>
 #include "temp.h"
-#include "leader.h"
-#include "follower.h"
-#include "client.h"
-#include "synra.h"
+#include "mu_leader.h"
+#include "mu_follower.h"
+#include "mu_client.h"
+#include "synra_client.h"
+#include "synra_node.h"
 
 
 int main() {
