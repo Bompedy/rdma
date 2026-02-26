@@ -146,6 +146,7 @@ inline void advance_frontier(const uint64_t slot, const std::vector<RemoteNode>&
     ibv_cq* cq,
     const ibv_mr* mr
 ) {
+    std::cout << "Going to reset!" << std::endl;
     uint64_t current_idx = discover_frontier(0, connections, cq, mr);
 
     if (current_idx % 2 == 0) {
@@ -169,6 +170,7 @@ inline void advance_frontier(const uint64_t slot, const std::vector<RemoteNode>&
         ibv_post_send(connections[i].id->qp, &wr, &bad);
     }
 
+    std::cout << "Waiting on reset" << std::endl;
     int responses = 0;
     ibv_wc wc{};
     while (responses < QUORUM) {
