@@ -132,12 +132,12 @@ inline void advance_frontier(const uint64_t slot, const std::vector<RemoteNode>&
         wr.wr.rdma.rkey = conns[i].rkey;
         ibv_post_send(conns[i].id->qp, &wr, &bad);
     }
-
-    ibv_wc wc {};
-    int polled = 0;
-    while (polled < conns.size()) {
-        if (ibv_poll_cq(cq, 1, &wc) > 0) polled++;
-    }
+    //
+    // ibv_wc wc {};
+    // int polled = 0;
+    // while (polled < conns.size()) {
+    //     if (ibv_poll_cq(cq, 1, &wc) > 0) polled++;
+    // }
 }
 
     inline void run_synra_reset(
@@ -209,6 +209,7 @@ inline void run_synra_tas_client(
             if (commit_cas(op, next_slot, client_id, connections, cq, mr) >= QUORUM) {
                 std::cout << "We fast path won and advanced slot to: " << next_slot << std::endl;
                 advance_frontier(next_slot, connections, mr, cq);
+                std::cout << "Advanced the frontier!" << std::endl;
                 break;
             }
 
