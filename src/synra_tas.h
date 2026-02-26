@@ -123,7 +123,7 @@ inline bool learn_majority(
 
     for (int i = 1; i < 128; ++i) {
         if (counts[i] >= QUORUM) {
-
+            std::cout << i << " ended up winning learn majority." << std::endl;
             return (i == client_id);
         }
     }
