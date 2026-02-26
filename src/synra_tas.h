@@ -206,7 +206,7 @@ inline void run_synra_tas_client(
             const uint64_t max_val = discover_frontier(op, connections, cq, mr);
 
             if (max_val % 2 != 0) {
-                std::cout << "We fast path lost?" << std::endl;
+                // std::cout << "We fast path lost?" << std::endl;
                 won = false;
                 continue;
             }
