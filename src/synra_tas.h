@@ -32,8 +32,12 @@ inline uint64_t discover_frontier(
     ibv_wc wc{};
     while (received < QUORUM) {
         if (ibv_poll_cq(cq, 1, &wc) > 0) {
-            max_v = std::max(max_v, remote_values[wc.wr_id & 0xFFF]);
-            received++;
+            const bool is_current_op = (wc.wr_id >> 32) == static_cast<uint64_t>(op);
+            const bool is_discovery = (wc.wr_id & 0xFFF000) == 0xABC000;
+            if (is_current_op && is_discovery) {
+                max_v = std::max(max_v, remote_values[wc.wr_id & 0xFFF]);
+                received++;
+            }
         }
     }
     return max_v;
@@ -66,8 +70,12 @@ inline int commit_cas(
     ibv_wc wc{};
     while (responses < QUORUM) {
         if (ibv_poll_cq(cq, 1, &wc) > 0) {
-            if (results[wc.wr_id & 0xFFF] == 0) wins++;
-            responses++;
+            const bool is_current_op = (wc.wr_id >> 32) == (uint64_t)op;
+            const bool is_cas = (wc.wr_id & 0xFFF000) == 0xDEF000;
+            if (is_current_op && is_cas) {
+                if (results[wc.wr_id & 0xFFF] == 0) wins++;
+                responses++;
+            }
         }
     }
     return wins;
@@ -102,9 +110,14 @@ inline bool learn_majority(
     ibv_wc wc{};
     while (reads_done < static_cast<int>(connections.size())) {
         if (ibv_poll_cq(cq, 1, &wc) > 0) {
-            const uint64_t val = cas_results[wc.wr_id & 0xFFF];
-            if (val > 0 && val < 1024) counts[val]++;
-            reads_done++;
+            const bool is_current_op = (wc.wr_id >> 32) == (uint64_t)op;
+            const bool is_learning = (wc.wr_id & 0xFFF000) == 0x999000;
+            if (is_current_op && is_learning) {
+                if (const uint64_t val = cas_results[wc.wr_id & 0xFFF]; val > 0 && val < 1024) {
+                    counts[val]++;
+                }
+                reads_done++;
+            }
         }
     }
 
@@ -124,25 +137,13 @@ inline void advance_frontier(const uint64_t slot, const std::vector<RemoteNode>&
         ibv_send_wr wr{}, *bad;
         wr.wr_id = 0x111000 | i;
         wr.opcode = IBV_WR_RDMA_WRITE;
-        // wr.send_flags = IBV_SEND_SIGNALED;
+        wr.send_flags = IBV_SEND_SIGNALED;
         wr.sg_list = &sge;
         wr.num_sge = 1;
         wr.wr.rdma.remote_addr = conns[i].addr + (ALIGNED_SIZE - 8);
         wr.wr.rdma.rkey = conns[i].rkey;
         ibv_post_send(conns[i].id->qp, &wr, &bad);
     }
-    //
-    // int polled_frontier_updates = 0;
-    // ibv_wc wc{};
-    //
-    // while (polled_frontier_updates < QUORUM) {
-    //     if (ibv_poll_cq(cq, 1, &wc) > 0) {
-    //         if ((wc.wr_id & 0xFFF000) == 0x111000) {
-    //             polled_frontier_updates++;
-    //         } else {
-    //         }
-    //     }
-    // }
 }
 
     inline void run_synra_reset(
@@ -200,14 +201,12 @@ inline void run_synra_tas_client(
 
     for (int op = 0; op < NUM_OPS_PER_CLIENT; ++op) {
         auto start_time = std::chrono::high_resolution_clock::now();
-        bool won = false;
 
         while (true) {
             const uint64_t max_val = discover_frontier(op, connections, cq, mr);
 
             if (max_val % 2 != 0) {
-                // std::cout << "We fast path lost?" << std::endl;
-                won = false;
+                std::cout << "We fast path lost?" << std::endl;
                 continue;
             }
 
@@ -216,26 +215,23 @@ inline void run_synra_tas_client(
                 std::cout << "We fast path won and advanced slot to: " << next_slot << std::endl;
                 advance_frontier(next_slot, connections, mr, cq);
                 std::cout << "Advanced the frontier!" << std::endl;
-                won = true;
                 break;
             }
 
             if (learn_majority(op, next_slot, client_id, connections, cq, mr)) {
                 std::cout << "We slow path won and advanced slot to: " << next_slot << std::endl;
                 advance_frontier(next_slot, connections, mr, cq);
-                won = true;
                 break;
             } else {
                 std::cout << "We slow path lost on slot: " << max_val << std::endl;
-                won = false;
 
             }
 
         }
 
-        if (won) run_synra_reset(client_id, connections, cq, mr);
-
         auto end_time = std::chrono::high_resolution_clock::now();
         latencies[op] = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count();
+
+        run_synra_reset(client_id, connections, cq, mr);
     }
 }
