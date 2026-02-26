@@ -115,7 +115,7 @@ inline bool learn_majority(
 }
 
 
-    inline void advance_frontier(const uint64_t slot, const std::vector<RemoteNode>& conns, const ibv_mr* mr, ibv_cq* cq) {
+inline void advance_frontier(const uint64_t slot, const std::vector<RemoteNode>& conns, const ibv_mr* mr, ibv_cq* cq) {
     uint64_t* val_ptr = static_cast<uint64_t*>(mr->addr) + 30;
     *val_ptr = slot;
 
@@ -124,34 +124,33 @@ inline bool learn_majority(
         ibv_send_wr wr{}, *bad;
         wr.wr_id = 0x111000 | i;
         wr.opcode = IBV_WR_RDMA_WRITE;
-        wr.send_flags = IBV_SEND_SIGNALED;
+        // wr.send_flags = IBV_SEND_SIGNALED;
         wr.sg_list = &sge;
         wr.num_sge = 1;
         wr.wr.rdma.remote_addr = conns[i].addr + (ALIGNED_SIZE - 8);
         wr.wr.rdma.rkey = conns[i].rkey;
         ibv_post_send(conns[i].id->qp, &wr, &bad);
     }
-
-    int polled_frontier_updates = 0;
-    ibv_wc wc{};
-
-    while (polled_frontier_updates < QUORUM) {
-        if (ibv_poll_cq(cq, 1, &wc) > 0) {
-            if ((wc.wr_id & 0xFFF000) == 0x111000) {
-                polled_frontier_updates++;
-            } else {
-            }
-        }
-    }
+    //
+    // int polled_frontier_updates = 0;
+    // ibv_wc wc{};
+    //
+    // while (polled_frontier_updates < QUORUM) {
+    //     if (ibv_poll_cq(cq, 1, &wc) > 0) {
+    //         if ((wc.wr_id & 0xFFF000) == 0x111000) {
+    //             polled_frontier_updates++;
+    //         } else {
+    //         }
+    //     }
+    // }
 }
 
     inline void run_synra_reset(
-    const int client_id,
-    const std::vector<RemoteNode>& connections,
-    ibv_cq* cq,
-    const ibv_mr* mr
-) {
-    std::cout << "Going to reset!" << std::endl;
+        const int client_id,
+        const std::vector<RemoteNode>& connections,
+        ibv_cq* cq,
+        const ibv_mr* mr
+    ) {
     uint64_t current_idx = discover_frontier(0, connections, cq, mr);
 
     if (current_idx % 2 == 0) {
@@ -175,17 +174,17 @@ inline bool learn_majority(
         ibv_post_send(connections[i].id->qp, &wr, &bad);
     }
 
-    std::cout << "Waiting on reset" << std::endl;
     int responses = 0;
     ibv_wc wc{};
     while (responses < QUORUM) {
         if (ibv_poll_cq(cq, 1, &wc) > 0) {
-            responses++;
+            if ((wc.wr_id & 0xFFF000) == 0x777000) {
+                responses++;
+            }
         }
     }
 
     advance_frontier(next_slot, connections, mr, cq);
-    std::cout << "Reset successful. Frontier moved to: " << next_slot << std::endl;
 }
 }
 
@@ -201,12 +200,14 @@ inline void run_synra_tas_client(
 
     for (int op = 0; op < NUM_OPS_PER_CLIENT; ++op) {
         auto start_time = std::chrono::high_resolution_clock::now();
+        bool won = false;
 
         while (true) {
             const uint64_t max_val = discover_frontier(op, connections, cq, mr);
 
             if (max_val % 2 != 0) {
                 std::cout << "We fast path lost?" << std::endl;
+                won = false;
                 break;
             }
 
@@ -215,21 +216,24 @@ inline void run_synra_tas_client(
                 std::cout << "We fast path won and advanced slot to: " << next_slot << std::endl;
                 advance_frontier(next_slot, connections, mr, cq);
                 std::cout << "Advanced the frontier!" << std::endl;
+                won = true;
                 break;
             }
 
             if (learn_majority(op, next_slot, client_id, connections, cq, mr)) {
                 std::cout << "We slow path won and advanced slot to: " << next_slot << std::endl;
                 advance_frontier(next_slot, connections, mr, cq);
+                won = true;
                 break;
             } else {
                 std::cout << "We slow path lost on slot: " << max_val << std::endl;
+                won = false;
 
             }
 
         }
 
-        run_synra_reset(client_id, connections, cq, mr);
+        if (won) run_synra_reset(client_id, connections, cq, mr);
 
         auto end_time = std::chrono::high_resolution_clock::now();
         latencies[op] = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count();
