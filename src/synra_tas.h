@@ -5,9 +5,8 @@
 #include <iostream>
 #include <chrono>
 
-namespace { // Private to this file
+namespace {
 
-// --- HELPER 1: DISCOVERY ---
 inline uint64_t discover_frontier(
     const int op,
     const std::vector<RemoteNode>& conns,
@@ -74,7 +73,6 @@ inline int commit_cas(
     return wins;
 }
 
-
 inline bool learn_majority(
     const int op,
     const uint64_t slot,
@@ -116,6 +114,7 @@ inline bool learn_majority(
     return false;
 }
 
+
 inline void advance_frontier(const uint64_t slot, const std::vector<RemoteNode>& conns, const ibv_mr* mr, ibv_cq* cq) {
     static uint64_t write_count = 0;
     uint64_t* val_ptr = static_cast<uint64_t*>(mr->addr) + 30;
@@ -127,7 +126,7 @@ inline void advance_frontier(const uint64_t slot, const std::vector<RemoteNode>&
         wr.wr_id = 0x111000 | i;
         wr.opcode = IBV_WR_RDMA_WRITE;
         // wr.send_flags = (++write_count % 64 == 0) ? IBV_SEND_SIGNALED : 0;
-        wr.send_flags = IBV_SEND_SIGNALED;
+        // wr.send_flags = IBV_SEND_SIGNALED;
         wr.sg_list = &sge; wr.num_sge = 1;
         wr.wr.rdma.remote_addr = conns[i].addr + (ALIGNED_SIZE - 8);
         wr.wr.rdma.rkey = conns[i].rkey;
@@ -140,7 +139,49 @@ inline void advance_frontier(const uint64_t slot, const std::vector<RemoteNode>&
         if (ibv_poll_cq(cq, 1, &wc) > 0) polled++;
     }
 }
+
+    inline void run_synra_reset(
+    const int client_id,
+    const std::vector<RemoteNode>& connections,
+    ibv_cq* cq,
+    const ibv_mr* mr
+) {
+    uint64_t current_idx = discover_frontier(0, connections, cq, mr);
+
+    if (current_idx % 2 == 0) {
+        return;
+    }
+
+    uint64_t next_slot = current_idx + 1;
+    uint64_t* write_val = static_cast<uint64_t*>(mr->addr) + 40;
+    *write_val = static_cast<uint64_t>(client_id);
+
+    for (size_t i = 0; i < connections.size(); ++i) {
+        ibv_sge sge{reinterpret_cast<uintptr_t>(write_val), 8, mr->lkey};
+        ibv_send_wr wr{}, *bad;
+        wr.wr_id = 0x777000 | i;
+        wr.opcode = IBV_WR_RDMA_WRITE;
+        wr.send_flags = IBV_SEND_SIGNALED;
+        wr.sg_list = &sge;
+        wr.num_sge = 1;
+        wr.wr.rdma.remote_addr = connections[i].addr + (next_slot * 8);
+        wr.wr.rdma.rkey = connections[i].rkey;
+        ibv_post_send(connections[i].id->qp, &wr, &bad);
+    }
+
+    int responses = 0;
+    ibv_wc wc{};
+    while (responses < QUORUM) {
+        if (ibv_poll_cq(cq, 1, &wc) > 0) {
+            responses++;
+        }
+    }
+
+    advance_frontier(next_slot, connections, mr, cq);
+    std::cout << "Reset successful. Frontier moved to: " << next_slot << std::endl;
 }
+}
+
 
 inline void run_synra_tas_client(
     const int client_id,
@@ -163,8 +204,7 @@ inline void run_synra_tas_client(
             }
 
             const uint64_t next_slot = max_val + 1;
-            const int wins = commit_cas(op, next_slot, client_id, connections, cq, mr);
-            if (wins >= QUORUM) {
+            if (commit_cas(op, next_slot, client_id, connections, cq, mr) >= QUORUM) {
                 std::cout << "We fast path won and advanced slot to: " << next_slot << std::endl;
                 advance_frontier(next_slot, connections, mr, cq);
                 break;
@@ -180,6 +220,8 @@ inline void run_synra_tas_client(
             }
 
         }
+
+        run_synra_reset(client_id, connections, cq, mr);
 
         auto end_time = std::chrono::high_resolution_clock::now();
         latencies[op] = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count();
