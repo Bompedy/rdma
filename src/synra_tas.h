@@ -115,8 +115,7 @@ inline bool learn_majority(
 }
 
 
-inline void advance_frontier(const uint64_t slot, const std::vector<RemoteNode>& conns, const ibv_mr* mr, ibv_cq* cq) {
-    static uint64_t write_count = 0;
+    inline void advance_frontier(const uint64_t slot, const std::vector<RemoteNode>& conns, const ibv_mr* mr, ibv_cq* cq) {
     uint64_t* val_ptr = static_cast<uint64_t*>(mr->addr) + 30;
     *val_ptr = slot;
 
@@ -125,19 +124,25 @@ inline void advance_frontier(const uint64_t slot, const std::vector<RemoteNode>&
         ibv_send_wr wr{}, *bad;
         wr.wr_id = 0x111000 | i;
         wr.opcode = IBV_WR_RDMA_WRITE;
-        // wr.send_flags = (++write_count % 64 == 0) ? IBV_SEND_SIGNALED : 0;
-        // wr.send_flags = IBV_SEND_SIGNALED;
-        wr.sg_list = &sge; wr.num_sge = 1;
+        wr.send_flags = IBV_SEND_SIGNALED;
+        wr.sg_list = &sge;
+        wr.num_sge = 1;
         wr.wr.rdma.remote_addr = conns[i].addr + (ALIGNED_SIZE - 8);
         wr.wr.rdma.rkey = conns[i].rkey;
         ibv_post_send(conns[i].id->qp, &wr, &bad);
     }
-    //
-    // ibv_wc wc {};
-    // int polled = 0;
-    // while (polled < conns.size()) {
-    //     if (ibv_poll_cq(cq, 1, &wc) > 0) polled++;
-    // }
+
+    int polled_frontier_updates = 0;
+    ibv_wc wc{};
+
+    while (polled_frontier_updates < QUORUM) {
+        if (ibv_poll_cq(cq, 1, &wc) > 0) {
+            if ((wc.wr_id & 0xFFF000) == 0x111000) {
+                polled_frontier_updates++;
+            } else {
+            }
+        }
+    }
 }
 
     inline void run_synra_reset(
