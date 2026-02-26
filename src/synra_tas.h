@@ -106,14 +106,14 @@ inline bool learn_majority(
     }
 
     int reads_done = 0;
-    uint32_t counts[1024] = {0};
+    uint32_t counts[128] = {0};
     ibv_wc wc{};
     while (reads_done < static_cast<int>(connections.size())) {
         if (ibv_poll_cq(cq, 1, &wc) > 0) {
             const bool is_current_op = (wc.wr_id >> 32) == (uint64_t)op;
             const bool is_learning = (wc.wr_id & 0xFFF000) == 0x999000;
             if (is_current_op && is_learning) {
-                if (const uint64_t val = cas_results[wc.wr_id & 0xFFF]; val > 0 && val < 1024) {
+                if (const uint64_t val = cas_results[wc.wr_id & 0xFFF]; val > 0 && val < 128) {
                     counts[val]++;
                 }
                 reads_done++;
@@ -121,8 +121,11 @@ inline bool learn_majority(
         }
     }
 
-    for (int i = 1; i < 1024; ++i) {
-        if (counts[i] >= QUORUM) return (i == client_id);
+    for (int i = 1; i < 128; ++i) {
+        if (counts[i] >= QUORUM) {
+
+            return (i == client_id);
+        }
     }
     return false;
 }
@@ -152,13 +155,13 @@ inline void advance_frontier(const uint64_t slot, const std::vector<RemoteNode>&
         ibv_cq* cq,
         const ibv_mr* mr
     ) {
-    uint64_t current_idx = discover_frontier(0, connections, cq, mr);
+    const uint64_t current_idx = discover_frontier(0, connections, cq, mr);
 
     if (current_idx % 2 == 0) {
         return;
     }
 
-    uint64_t next_slot = current_idx + 1;
+    const uint64_t next_slot = current_idx + 1;
     uint64_t* write_val = static_cast<uint64_t*>(mr->addr) + 40;
     *write_val = static_cast<uint64_t>(client_id);
 
