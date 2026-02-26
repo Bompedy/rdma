@@ -206,15 +206,15 @@ inline void run_synra_tas_client(
             const uint64_t max_val = discover_frontier(op, connections, cq, mr);
 
             if (max_val % 2 != 0) {
-                std::cout << "We fast path lost?" << std::endl;
+                // std::cout << "We fast path lost?" << std::endl;
                 continue;
             }
 
             const uint64_t next_slot = max_val + 1;
             if (commit_cas(op, next_slot, client_id, connections, cq, mr) >= QUORUM) {
-                std::cout << "We fast path won and advanced slot to: " << next_slot << std::endl;
+                // std::cout << "We fast path won and advanced slot to: " << next_slot << std::endl;
                 advance_frontier(next_slot, connections, mr, cq);
-                std::cout << "Advanced the frontier!" << std::endl;
+                // std::cout << "Advanced the frontier!" << std::endl;
                 break;
             }
 
