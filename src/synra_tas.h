@@ -89,7 +89,7 @@ inline bool learn_majority(
     ibv_cq* cq,
     const ibv_mr* mr
 ) {
-    uint64_t* cas_results = static_cast<uint64_t*>(mr->addr) + 20;
+    uint64_t* cas_results = static_cast<uint64_t*>(mr->addr) + 100;
     std::fill_n(cas_results, connections.size(), 0);
 
     for (size_t i = 0; i < connections.size(); ++i) {
@@ -206,15 +206,12 @@ inline void run_synra_tas_client(
             const uint64_t max_val = discover_frontier(op, connections, cq, mr);
 
             if (max_val % 2 != 0) {
-                // std::cout << "We fast path lost?" << std::endl;
                 continue;
             }
 
             const uint64_t next_slot = max_val + 1;
             if (commit_cas(op, next_slot, client_id, connections, cq, mr) >= QUORUM) {
-                // std::cout << "We fast path won and advanced slot to: " << next_slot << std::endl;
                 advance_frontier(next_slot, connections, mr, cq);
-                // std::cout << "Advanced the frontier!" << std::endl;
                 break;
             }
 
@@ -222,11 +219,9 @@ inline void run_synra_tas_client(
                 std::cout << "We slow path won and advanced slot to: " << next_slot << std::endl;
                 advance_frontier(next_slot, connections, mr, cq);
                 break;
-            } else {
-                std::cout << "We slow path lost on slot: " << max_val << std::endl;
-
             }
 
+            std::cout << "We slow path lost on slot: " << max_val << std::endl;
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
