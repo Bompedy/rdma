@@ -5,6 +5,8 @@
 #include <iostream>
 #include <chrono>
 
+const uint64_t EMPTY_SLOT = 0xFFFFFFFF;
+
 namespace {
 
 inline uint64_t discover_frontier(
@@ -61,7 +63,7 @@ inline int commit_cas(
         wr.sg_list = &sge; wr.num_sge = 1;
         wr.wr.rdma.remote_addr = connections[i].addr + (slot * 8);
         wr.wr.atomic.rkey = connections[i].rkey;
-        wr.wr.atomic.compare_add = 0;
+        wr.wr.atomic.compare_add = EMPTY_SLOT;
         wr.wr.atomic.swap = static_cast<uint64_t>(cid);
         ibv_post_send(connections[i].id->qp, &wr, &bad);
     }
@@ -73,7 +75,7 @@ inline int commit_cas(
             const bool is_current_op = (wc.wr_id >> 32) == (uint64_t)op;
             const bool is_cas = (wc.wr_id & 0xFFF000) == 0xDEF000;
             if (is_current_op && is_cas) {
-                if (results[wc.wr_id & 0xFFF] == 0) wins++;
+                if (results[wc.wr_id & 0xFFF] == EMPTY_SLOT) wins++;
                 responses++;
             }
         }
@@ -113,7 +115,8 @@ inline bool learn_majority(
             const bool is_current_op = (wc.wr_id >> 32) == (uint64_t)op;
             const bool is_learning = (wc.wr_id & 0xFFF000) == 0x999000;
             if (is_current_op && is_learning) {
-                if (const uint64_t val = cas_results[wc.wr_id & 0xFFF]; val > 0 && val < 128) {
+                const uint64_t val = cas_results[wc.wr_id & 0xFFF];
+                if (val < 128) {
                     counts[val]++;
                 }
                 reads_done++;
@@ -121,9 +124,9 @@ inline bool learn_majority(
         }
     }
 
-    for (int i = 1; i < 128; ++i) {
+    for (int i = 0; i < 128; ++i) {
         if (counts[i] >= QUORUM) {
-            std::cout << i << " ended up winning learn majority." << std::endl;
+            std::cout << "Client " << i << " is the confirmed winner." << std::endl;
             return (i == client_id);
         }
     }
