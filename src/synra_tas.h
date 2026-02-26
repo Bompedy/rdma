@@ -208,7 +208,7 @@ inline void run_synra_tas_client(
             if (max_val % 2 != 0) {
                 std::cout << "We fast path lost?" << std::endl;
                 won = false;
-                break;
+                continue;
             }
 
             const uint64_t next_slot = max_val + 1;
