@@ -296,7 +296,7 @@ inline void run_synra_tas_client(
                 break;
             }
 
-            std::cout << "We slow path lost on slot: " << next_slot << std::endl;
+            std::cout << client_id << " - we slow path lost on slot: " << next_slot << std::endl;
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
