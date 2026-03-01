@@ -285,18 +285,16 @@ inline void run_synra_tas_client(
 
             const uint64_t next_slot = max_val + 1;
             if (commit_cas(state, op, next_slot, client_id, connections, cq, mr) >= QUORUM) {
-                std::cout << "We cas won?" << std::endl;
+                // std::cout << "We cas won?" << std::endl;
                 advance_frontier(state, next_slot, connections, mr);
                 break;
             }
 
             if (learn_majority(state, op, next_slot, client_id, connections, cq, mr)) {
-                std::cout << "We slow path won and advanced slot to: " << next_slot << std::endl;
+                // std::cout << "We slow path won and advanced slot to: " << next_slot << std::endl;
                 advance_frontier(state, next_slot, connections, mr);
                 break;
             }
-
-            std::cout << "We slow path lost on slot: " << max_val << std::endl;
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
