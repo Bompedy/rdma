@@ -384,7 +384,7 @@ inline void run_synra_cas_client(
             }
 
             if (result % 2 != 0) {
-                std::cout << "Someone else holds the lock!" << target_slot-1 << std::endl;
+                std::cout << "Someone else holds the lock: " << target_slot-1 << " Result: " << result << std::endl;
                 target_slot = result + 2;
             } else {
                 target_slot = result + 1;
