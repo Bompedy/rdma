@@ -326,6 +326,7 @@ inline void run_synra_cas_client(
     const ibv_mr* mr,
     uint64_t* latencies
 ) {
+
     const auto state = static_cast<LocalState*>(mr->addr);
     uint64_t target_slot = 1;
 
@@ -376,6 +377,46 @@ inline void run_synra_cas_client(
             const uint64_t result = state->cas_results[0];
 
             if (result == target_slot - 1) {
+                state->next_frontier = static_cast<uint64_t>(client_id);
+
+                ibv_sge replication_sge {
+                    .addr = reinterpret_cast<uintptr_t>(&state->next_frontier),
+                    .length = 8,
+                    .lkey = mr->lkey
+                };
+
+                const uint64_t my_ticket = *static_cast<uint64_t*>(mr->addr);
+                const uint64_t log_offset = (my_ticket * 8);
+
+                for (size_t i = 0; i < connections.size(); ++i) {
+                    ibv_send_wr wr{}, *bad_wr = nullptr;
+                    wr.wr_id = (my_ticket << 32) | (static_cast<uint32_t>(i));
+                    wr.sg_list = &replication_sge;
+                    wr.num_sge = 1;
+                    wr.opcode = IBV_WR_RDMA_WRITE;
+                    wr.send_flags = IBV_SEND_SIGNALED;
+
+                    wr.wr.rdma.remote_addr = connections[i].addr + log_offset;
+                    wr.wr.rdma.rkey = connections[i].rkey;
+
+                    if (ibv_post_send(connections[i].id->qp, &wr, &bad_wr)) {
+                        throw std::runtime_error("Replication post failed");
+                    }
+                }
+
+                int acks = 0;
+                while (acks < QUORUM) {
+                    ibv_wc wc_batch[32];
+                    const int pulled = ibv_poll_cq(cq, 32, wc_batch);
+                    for (int j = 0; j < pulled; ++j) {
+                        if (wc_batch[j].status != IBV_WC_SUCCESS) continue;
+                        const uint64_t completion_ticket = wc_batch[j].wr_id >> 32;
+                        if (completion_ticket == my_ticket) {
+                            acks++;
+                        }
+                    }
+                }
+
                 advance_frontier(state, target_slot+1, connections, mr);
                 target_slot += 2;
                 break;
