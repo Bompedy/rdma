@@ -385,12 +385,11 @@ inline void run_synra_cas_client(
                     .lkey = mr->lkey
                 };
 
-                const uint64_t my_ticket = *static_cast<uint64_t*>(mr->addr);
-                const uint64_t log_offset = (my_ticket * 8);
+                const uint64_t log_offset = (target_slot * 8);
 
                 for (size_t i = 0; i < connections.size(); ++i) {
                     ibv_send_wr wr{}, *bad_wr = nullptr;
-                    wr.wr_id = (my_ticket << 32) | (static_cast<uint32_t>(i));
+                    wr.wr_id = (target_slot << 32) | (static_cast<uint32_t>(i));
                     wr.sg_list = &replication_sge;
                     wr.num_sge = 1;
                     wr.opcode = IBV_WR_RDMA_WRITE;
@@ -412,7 +411,7 @@ inline void run_synra_cas_client(
                     for (int j = 0; j < pulled; ++j) {
                         if (wc_batch[j].status != IBV_WC_SUCCESS) continue;
                         const uint64_t completion_ticket = wc_batch[j].wr_id >> 32;
-                        if (completion_ticket == my_ticket) {
+                        if (completion_ticket == target_slot) {
                             acks++;
                         }
                     }
