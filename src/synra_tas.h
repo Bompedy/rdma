@@ -285,7 +285,7 @@ inline void run_synra_tas_client(
 
             const uint64_t next_slot = max_val + 1;
             if (commit_cas(state, op, next_slot, client_id, connections, cq, mr) >= QUORUM) {
-                // std::cout << "We fast path won?" << std::endl;
+                std::cout << "We fast path won?" << std::endl;
                 advance_frontier(state, next_slot, connections, mr);
                 break;
             }
