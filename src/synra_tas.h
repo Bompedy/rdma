@@ -209,8 +209,7 @@ namespace {
         const std::vector<RemoteNode>& connections,
         const ibv_mr* mr
     ) {
-        uint64_t* val_ptr = static_cast<uint64_t*>(mr->addr) + 30;
-        *val_ptr = slot;
+        state->next_frontier = slot;
 
         for (size_t i = 0; i < connections.size(); ++i) {
             ibv_sge sge{
