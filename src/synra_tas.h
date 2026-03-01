@@ -160,16 +160,23 @@ namespace {
             }
         }
 
-        uint64_t winner = 0xFFFFFFFFFFFFFFFF;
-        bool quorum_met = false;
+        uint64_t quorum_winner = 0xFFFFFFFFFFFFFFFF;
+        uint64_t lowest_id_seen = 0xFFFFFFFFFFFFFFFF;
+        bool found_quorum = false;
+        bool found_any = false;
 
         constexpr uint64_t LOCAL_SENTINEL = 0xFEFEFEFEFEFEFEFE;
 
         for (size_t i = 0; i < connections.size(); ++i) {
             const uint64_t val = state->learn_results[i];
 
-            if (val == LOCAL_SENTINEL) continue;
-            if (val == EMPTY_SLOT) continue;
+            if (val == LOCAL_SENTINEL || val == EMPTY_SLOT) continue;
+
+            found_any = true;
+
+            if (val < lowest_id_seen) {
+                lowest_id_seen = val;
+            }
 
             int count = 0;
             for (size_t j = 0; j < connections.size(); ++j) {
@@ -177,13 +184,20 @@ namespace {
             }
 
             if (count >= QUORUM) {
-                winner = val;
-                quorum_met = true;
-                break;
+                if (val < quorum_winner) {
+                    quorum_winner = val;
+                    found_quorum = true;
+                }
             }
         }
 
-        if (quorum_met) return (winner == static_cast<uint64_t>(client_id));
+        if (found_quorum) {
+            return (quorum_winner == static_cast<uint64_t>(client_id));
+        }
+
+        if (found_any) {
+            return (lowest_id_seen == static_cast<uint64_t>(client_id));
+        }
 
         return false;
     }
