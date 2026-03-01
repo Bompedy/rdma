@@ -319,3 +319,79 @@ inline void run_synra_tas_client(
         run_synra_reset(state, client_id, connections, cq, mr);
     }
 }
+
+inline void run_synra_cas_client(
+    const int client_id,
+    const std::vector<RemoteNode>& connections,
+    ibv_cq* cq,
+    const ibv_mr* mr,
+    uint64_t* latencies
+) {
+    const auto state = static_cast<LocalState*>(mr->addr);
+    uint64_t target_slot = 1;
+
+    for (int op = 0; op < NUM_OPS_PER_CLIENT; ++op) {
+        auto start_time = std::chrono::high_resolution_clock::now();
+
+        while (true) {
+            const uint64_t expected = target_slot - 1;
+
+            state->cas_results[0] = 0xFEFEFEFEFEFEFEFE;
+
+            ibv_sge sge {
+                .addr = reinterpret_cast<uintptr_t>(&state->cas_results[0]),
+                .length = 8,
+                .lkey = mr->lkey
+            };
+
+            ibv_send_wr wr{}, *bad_wr;
+            wr.wr_id = (static_cast<uint64_t>(op) << 32) | 0x123;
+            wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+            wr.send_flags = IBV_SEND_SIGNALED;
+            wr.sg_list = &sge;
+            wr.num_sge = 1;
+            wr.wr.atomic.remote_addr = connections[0].addr + (FRONTIER_OFFSET);
+            wr.wr.atomic.rkey = connections[0].rkey;
+            wr.wr.atomic.compare_add = expected;
+            wr.wr.atomic.swap = target_slot;
+
+            if (ibv_post_send(connections[0].id->qp, &wr, &bad_wr)) {
+                std::cerr << "Post failed: " << strerror(errno) << std::endl;
+                continue;
+            }
+
+            ibv_wc wc;
+            const uint64_t expected_id = (static_cast<uint64_t>(op) << 32) | 0x123;
+
+            while (true) {
+                const int n = ibv_poll_cq(cq, 1, &wc);
+                if (n < 0) throw std::runtime_error("Poll CQ failed");
+                if (n > 0) if (wc.wr_id == expected_id) break;
+            }
+
+            if (wc.status != IBV_WC_SUCCESS) {
+                std::cerr << "CAS completion error: " << wc.status << std::endl;
+                continue;
+            }
+
+            const uint64_t result = state->cas_results[0];
+
+            if (result == target_slot - 1) {
+                std::cout << "We got the lock for slot: " << target_slot-1 << std::endl;
+                advance_frontier(state, target_slot, connections, mr);
+                target_slot += 2;
+                break;
+            }
+
+            if (result % 2 != 0) {
+                std::cout << "Someone else holds the lock!" << target_slot-1 << std::endl;
+                target_slot = result + 2;
+            } else {
+                target_slot = result + 1;
+            }
+        }
+
+        auto end_time = std::chrono::high_resolution_clock::now();
+        latencies[op] = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count();
+    }
+}
