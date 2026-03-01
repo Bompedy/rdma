@@ -403,7 +403,6 @@ inline void run_synra_cas_client(
                     }
                 }
 
-                std::cout << "Going to wait for acks!" << std::endl;
                 int acks = 0;
                 while (acks < QUORUM) {
                     ibv_wc wc_batch[32];
@@ -417,7 +416,6 @@ inline void run_synra_cas_client(
                     }
                 }
 
-                std::cout << "Advancing to: " << target_slot + 1 << std::endl;
                 advance_frontier(state, target_slot+1, connections, mr);
                 target_slot += 2;
                 break;
