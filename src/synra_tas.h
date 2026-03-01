@@ -404,6 +404,7 @@ inline void run_synra_cas_client(
                     }
                 }
 
+                std::cout << "Going to wait for acks!" << std::endl;
                 int acks = 0;
                 while (acks < QUORUM) {
                     ibv_wc wc_batch[32];
