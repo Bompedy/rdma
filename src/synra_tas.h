@@ -111,7 +111,7 @@ namespace {
                 const bool is_current_op = (wc.wr_id >> 32) == static_cast<uint64_t>(op);
                 const bool is_cas = (wc.wr_id & MASK) == COMMIT_ID;
                 if (is_current_op && is_cas) {
-                    if (&state->cas_results[wc.wr_id & 0xFFF] == nullptr) wins++;
+                    if (state->cas_results[wc.wr_id & 0xFFF] == EMPTY_SLOT) wins++;
                     responses++;
                 }
             }
