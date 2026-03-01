@@ -295,6 +295,8 @@ inline void run_synra_tas_client(
                 advance_frontier(state, next_slot, connections, mr);
                 break;
             }
+
+            std::cout << "We slow path lost and advanced slot to: " << next_slot << std::endl;
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
