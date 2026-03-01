@@ -376,7 +376,7 @@ inline void run_synra_cas_client(
             const uint64_t result = state->cas_results[0];
 
             if (result == target_slot - 1) {
-                // std::cout << "We got the lock for slot: " << target_slot-1 << std::endl;
+                std::cout << client_id << " - We got the lock for slot: " << target_slot-1 << std::endl;
 
                 advance_frontier(state, target_slot+1, connections, mr);
                 target_slot += 2;
@@ -384,7 +384,7 @@ inline void run_synra_cas_client(
             }
 
             if (result % 2 != 0) {
-                // std::cout << "Someone else holds the lock: " << target_slot-1 << " Result: " << result << std::endl;
+                std::cout << "Someone else holds the lock: " << target_slot-1 << " Result: " << result << std::endl;
                 target_slot = result + 2;
             } else {
                 target_slot = result + 1;
