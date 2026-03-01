@@ -64,6 +64,7 @@ namespace {
                 }
             }
         }
+        std::cout << "Found a quorum" << std::endl;
         return max_v;
     }
 
