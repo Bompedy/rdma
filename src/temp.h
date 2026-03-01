@@ -57,6 +57,7 @@ constexpr size_t NUM_CLIENTS = 1;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / NUM_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * NUM_CLIENTS;
 constexpr uint64_t EMPTY_SLOT = 0xFFFFFFFFFFFFFFFF;
+constexpr auto FRONTIER_OFFSET = ALIGNED_SIZE - 8;
 
 inline void* allocate_rdma_buffer() {
     void* ptr = mmap(nullptr, ALIGNED_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);

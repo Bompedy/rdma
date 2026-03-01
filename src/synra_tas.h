@@ -10,8 +10,6 @@ constexpr auto ADVANCE_FRONTIER_ID = 0x111000;
 constexpr auto COMMIT_ID   = 0xDEF000;
 constexpr auto MASK  = 0xFFF000;
 
-constexpr auto FRONTIER_OFFSET = ALIGNED_SIZE - 8;
-
 constexpr auto MAX_REPLICAS = 10;
 
 namespace {
@@ -280,6 +278,7 @@ inline void run_synra_tas_client(
 
             const uint64_t next_slot = max_val + 1;
             if (commit_cas(state, op, next_slot, client_id, connections, cq, mr) >= QUORUM) {
+                std::cout << "We cas won?" << std::endl;
                 advance_frontier(state, next_slot, connections, mr);
                 break;
             }

@@ -78,6 +78,7 @@ inline void run_synra_node(const uint32_t node_id) {
     uint32_t clients_connected = 0;
 
     char* log_pool = static_cast<char*>(allocate_rdma_buffer());
+     *reinterpret_cast<uint64_t*>(reinterpret_cast<uint8_t*>(log_pool) + FRONTIER_OFFSET) = 0;
 
     ConnPrivateData leader_creds{};
     leader_creds.node_id = node_id;
