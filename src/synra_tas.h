@@ -44,7 +44,9 @@ namespace {
             wr.num_sge = 1;
             wr.wr.rdma.remote_addr = conns[i].addr + FRONTIER_OFFSET;
             wr.wr.rdma.rkey = conns[i].rkey;
-            if (ibv_post_send(conns[i].id->qp, &wr, &bad)) {
+            if (int ret = ibv_post_send(conns[i].id->qp, &wr, &bad)) {
+                fprintf(stderr, "Post failed: %s (errno: %d) | Addr: %p | LKey: %u\n",
+                        strerror(ret), ret, (void*)sge.addr, sge.lkey);
                 throw std::runtime_error("Failed to discover frontier");
             }
         }
@@ -54,11 +56,10 @@ namespace {
         ibv_wc wc{};
         while (received < QUORUM) {
             if (ibv_poll_cq(cq, 1, &wc) > 0) {
-                const auto res_op = static_cast<uint32_t>(wc.wr_id >> 32);
-                const auto res_meta = static_cast<uint32_t>(wc.wr_id & EMPTY_SLOT);
-                if (res_op == static_cast<uint32_t>(op) && (res_meta & MASK) == DISCOVER_FRONTIER_ID) {
-                    const uint32_t idx = res_meta & ~MASK;
-                    max_v = std::max(max_v, state->frontier_values[idx]);
+                const bool is_current_op = (wc.wr_id >> 32) == static_cast<uint64_t>(op);
+                const bool is_discover = (wc.wr_id & MASK) == DISCOVER_FRONTIER_ID;
+                if (is_current_op && is_discover) {
+                    max_v = std::max(max_v, state->frontier_values[wc.wr_id & 0xFFF]);
                     received++;
                 }
             }
