@@ -51,18 +51,25 @@ namespace {
 
         int received = 0;
         uint64_t max_v = 0;
-        ibv_wc wc{};
+
+        ibv_wc wcs[MAX_REPLICAS];
         while (received < QUORUM) {
-            if (ibv_poll_cq(cq, 1, &wc) > 0) {
-                const bool is_current_op = (wc.wr_id >> 32) == static_cast<uint64_t>(op);
-                const bool is_discover = (wc.wr_id & MASK) == DISCOVER_FRONTIER_ID;
-                if (is_current_op && is_discover) {
-                    max_v = std::max(max_v, state->frontier_values[wc.wr_id & 0xFFF]);
-                    received++;
+            int n = ibv_poll_cq(cq, MAX_REPLICAS, wcs);
+            if (n > 0) {
+                for (int i = 0; i < n; ++i) {
+                    const auto& wc = wcs[i];
+                    if (wc.status != IBV_WC_SUCCESS) {
+                        throw std::runtime_error("Work Completion Error read: " + std::to_string(wc.status));
+                    }
+                    const bool is_current_op = (wc.wr_id >> 32) == static_cast<uint64_t>(op);
+                    const bool is_discover = (wc.wr_id & MASK) == DISCOVER_FRONTIER_ID;
+                    if (is_current_op && is_discover) {
+                        max_v = std::max(max_v, state->frontier_values[wc.wr_id & 0xFFF]);
+                        received++;
+                    }
                 }
             }
         }
-        std::cout << "Found a quorum" << std::endl;
         return max_v;
     }
 
