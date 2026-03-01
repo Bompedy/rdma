@@ -5,194 +5,256 @@
 #include <iostream>
 #include <chrono>
 
-const uint64_t EMPTY_SLOT = 0xFFFFFFFF;
+constexpr auto DISCOVER_FRONTIER_ID = 0xABC000;
+constexpr auto ADVANCE_FRONTIER_ID = 0x111000;
+constexpr auto COMMIT_ID   = 0xDEF000;
+constexpr auto MASK  = 0xFFF000;
+
+constexpr auto FRONTIER_OFFSET = ALIGNED_SIZE - 8;
+
+constexpr auto MAX_REPLICAS = 10;
 
 namespace {
+    struct alignas(64) LocalState {
+        uint64_t frontier_values[MAX_REPLICAS];
+        uint64_t cas_results[MAX_REPLICAS];
+        uint64_t learn_results[MAX_REPLICAS];
+        uint64_t next_frontier;
+        uint64_t metadata;
+    };
 
-inline uint64_t discover_frontier(
-    const int op,
-    const std::vector<RemoteNode>& conns,
-    ibv_cq* cq,
-    const ibv_mr* mr
-) {
-    uint64_t* remote_values = static_cast<uint64_t*>(mr->addr) + 10;
-
-    for (size_t i = 0; i < conns.size(); ++i) {
-        ibv_sge sge{reinterpret_cast<uintptr_t>(&remote_values[i]), 8, mr->lkey};
-        ibv_send_wr wr{}, *bad;
-        wr.wr_id = (static_cast<uint64_t>(op) << 32) | 0xABC000 | i;
-        wr.opcode = IBV_WR_RDMA_READ;
-        wr.send_flags = IBV_SEND_SIGNALED;
-        wr.sg_list = &sge; wr.num_sge = 1;
-        wr.wr.rdma.remote_addr = conns[i].addr + (ALIGNED_SIZE - 8);
-        wr.wr.rdma.rkey = conns[i].rkey;
-        ibv_post_send(conns[i].id->qp, &wr, &bad);
-    }
-
-    int received = 0;
-    uint64_t max_v = 0;
-    ibv_wc wc{};
-    while (received < QUORUM) {
-        if (ibv_poll_cq(cq, 1, &wc) > 0) {
-            const bool is_current_op = (wc.wr_id >> 32) == static_cast<uint64_t>(op);
-            const bool is_discovery = (wc.wr_id & 0xFFF000) == 0xABC000;
-            if (is_current_op && is_discovery) {
-                max_v = std::max(max_v, remote_values[wc.wr_id & 0xFFF]);
-                received++;
+    uint64_t discover_frontier(
+        LocalState* state,
+        const int op,
+        const std::vector<RemoteNode>& conns,
+        ibv_cq* cq,
+        const ibv_mr* mr
+    ) {
+        for (size_t i = 0; i < conns.size(); ++i) {
+            ibv_sge sge{
+                .addr = reinterpret_cast<uintptr_t>(&state->frontier_values[i]),
+                .length = 8,
+                .lkey = mr->lkey
+            };
+            ibv_send_wr wr{}, *bad;
+            wr.wr_id = (static_cast<uint64_t>(op) << 32) | DISCOVER_FRONTIER_ID | i;
+            wr.opcode = IBV_WR_RDMA_READ;
+            wr.send_flags = IBV_SEND_SIGNALED;
+            wr.sg_list = &sge;
+            wr.num_sge = 1;
+            wr.wr.rdma.remote_addr = conns[i].addr + FRONTIER_OFFSET;
+            wr.wr.rdma.rkey = conns[i].rkey;
+            if (ibv_post_send(conns[i].id->qp, &wr, &bad)) {
+                throw std::runtime_error("Failed to discover frontier");
             }
         }
-    }
-    return max_v;
-}
 
-inline int commit_cas(
-    const int op,
-    const uint64_t slot,
-    const int cid,
-    const std::vector<RemoteNode>& connections,
-    ibv_cq* cq,
-    const ibv_mr* mr
-) {
-    uint64_t* results = static_cast<uint64_t*>(mr->addr) + 20;
-    for (size_t i = 0; i < connections.size(); ++i) {
-        ibv_sge sge{reinterpret_cast<uintptr_t>(&results[i]), 8, mr->lkey};
-        ibv_send_wr wr{}, *bad;
-        wr.wr_id = (static_cast<uint64_t>(op) << 32) | 0xDEF000 | i;
-        wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
-        wr.send_flags = IBV_SEND_SIGNALED;
-        wr.sg_list = &sge; wr.num_sge = 1;
-        wr.wr.rdma.remote_addr = connections[i].addr + (slot * 8);
-        wr.wr.atomic.rkey = connections[i].rkey;
-        wr.wr.atomic.compare_add = EMPTY_SLOT;
-        wr.wr.atomic.swap = static_cast<uint64_t>(cid);
-        ibv_post_send(connections[i].id->qp, &wr, &bad);
-    }
-
-    int responses = 0, wins = 0;
-    ibv_wc wc{};
-    while (responses < QUORUM) {
-        if (ibv_poll_cq(cq, 1, &wc) > 0) {
-            const bool is_current_op = (wc.wr_id >> 32) == (uint64_t)op;
-            const bool is_cas = (wc.wr_id & 0xFFF000) == 0xDEF000;
-            if (is_current_op && is_cas) {
-                if (results[wc.wr_id & 0xFFF] == EMPTY_SLOT) wins++;
-                responses++;
-            }
-        }
-    }
-    return wins;
-}
-
-inline bool learn_majority(
-    const int op,
-    const uint64_t slot,
-    const int client_id,
-    const std::vector<RemoteNode>& connections,
-    ibv_cq* cq,
-    const ibv_mr* mr
-) {
-    uint64_t* cas_results = static_cast<uint64_t*>(mr->addr) + 100;
-    std::fill_n(cas_results, connections.size(), 0);
-
-    for (size_t i = 0; i < connections.size(); ++i) {
-        ibv_sge sge{reinterpret_cast<uintptr_t>(&cas_results[i]), 8, mr->lkey};
-        ibv_send_wr wr{}, *bad;
-        wr.wr_id = (static_cast<uint64_t>(op) << 32) | 0x999000 | i;
-        wr.opcode = IBV_WR_RDMA_READ;
-        wr.send_flags = IBV_SEND_SIGNALED;
-        wr.sg_list = &sge;
-        wr.num_sge = 1;
-        wr.wr.rdma.remote_addr = connections[i].addr + (slot * 8);
-        wr.wr.rdma.rkey = connections[i].rkey;
-        ibv_post_send(connections[i].id->qp, &wr, &bad);
-    }
-
-    int reads_done = 0;
-    uint32_t counts[128] = {0};
-    ibv_wc wc{};
-    while (reads_done < static_cast<int>(connections.size())) {
-        if (ibv_poll_cq(cq, 1, &wc) > 0) {
-            const bool is_current_op = (wc.wr_id >> 32) == (uint64_t)op;
-            const bool is_learning = (wc.wr_id & 0xFFF000) == 0x999000;
-            if (is_current_op && is_learning) {
-                const uint64_t val = cas_results[wc.wr_id & 0xFFF];
-                if (val < 128) {
-                    counts[val]++;
+        int received = 0;
+        uint64_t max_v = 0;
+        ibv_wc wc{};
+        while (received < QUORUM) {
+            if (ibv_poll_cq(cq, 1, &wc) > 0) {
+                const auto res_op = static_cast<uint32_t>(wc.wr_id >> 32);
+                const auto res_meta = static_cast<uint32_t>(wc.wr_id & EMPTY_SLOT);
+                if (res_op == static_cast<uint32_t>(op) && (res_meta & MASK) == DISCOVER_FRONTIER_ID) {
+                    const uint32_t idx = res_meta & ~MASK;
+                    max_v = std::max(max_v, state->frontier_values[idx]);
+                    received++;
                 }
-                reads_done++;
             }
         }
+        return max_v;
     }
 
-    for (int i = 0; i < 128; ++i) {
-        if (counts[i] >= QUORUM) {
-            std::cout << "Client " << i << " is the confirmed winner." << std::endl;
-            return (i == client_id);
+    int commit_cas(
+        LocalState* state,
+        const int op,
+        const uint64_t slot,
+        const int cid,
+        const std::vector<RemoteNode>& connections,
+        ibv_cq* cq,
+        const ibv_mr* mr
+    ) {
+        std::fill_n(state->cas_results, connections.size(), 0xFEFEFEFEFEFEFEFE);
+        for (size_t i = 0; i < connections.size(); ++i) {
+            ibv_sge sge{
+                .addr = reinterpret_cast<uintptr_t>(&state->cas_results[i]),
+                .length = 8,
+                .lkey = mr->lkey
+            };
+            ibv_send_wr wr{}, *bad;
+            wr.wr_id = (static_cast<uint64_t>(op) << 32) | COMMIT_ID | i;
+            wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+            wr.send_flags = IBV_SEND_SIGNALED;
+            wr.sg_list = &sge;
+            wr.num_sge = 1;
+            wr.wr.rdma.remote_addr = connections[i].addr + (slot * 8);
+            wr.wr.atomic.rkey = connections[i].rkey;
+            wr.wr.atomic.compare_add = EMPTY_SLOT;
+            wr.wr.atomic.swap = static_cast<uint64_t>(cid);
+            if (ibv_post_send(connections[i].id->qp, &wr, &bad)) {
+                throw std::runtime_error("Failed to commit cas");
+            }
         }
+
+        int responses = 0, wins = 0;
+        ibv_wc wc{};
+        while (responses < QUORUM) {
+            if (ibv_poll_cq(cq, 1, &wc) > 0) {
+                const bool is_current_op = (wc.wr_id >> 32) == static_cast<uint64_t>(op);
+                const bool is_cas = (wc.wr_id & MASK) == COMMIT_ID;
+                if (is_current_op && is_cas) {
+                    if (&state->cas_results[wc.wr_id & 0xFFF] == nullptr) wins++;
+                    responses++;
+                }
+            }
+        }
+        return wins;
     }
-    return false;
-}
 
-
-inline void advance_frontier(const uint64_t slot, const std::vector<RemoteNode>& conns, const ibv_mr* mr, ibv_cq* cq) {
-    uint64_t* val_ptr = static_cast<uint64_t*>(mr->addr) + 30;
-    *val_ptr = slot;
-
-    for (size_t i = 0; i < conns.size(); ++i) {
-        ibv_sge sge{reinterpret_cast<uintptr_t>(val_ptr), 8, mr->lkey};
-        ibv_send_wr wr{}, *bad;
-        wr.wr_id = 0x111000 | i;
-        wr.opcode = IBV_WR_RDMA_WRITE;
-        wr.send_flags = IBV_SEND_SIGNALED;
-        wr.sg_list = &sge;
-        wr.num_sge = 1;
-        wr.wr.rdma.remote_addr = conns[i].addr + (ALIGNED_SIZE - 8);
-        wr.wr.rdma.rkey = conns[i].rkey;
-        ibv_post_send(conns[i].id->qp, &wr, &bad);
-    }
-}
-
-    inline void run_synra_reset(
+    bool learn_majority(
+        LocalState* state,
+        const int op,
+        const uint64_t slot,
         const int client_id,
         const std::vector<RemoteNode>& connections,
         ibv_cq* cq,
         const ibv_mr* mr
     ) {
-    const uint64_t current_idx = discover_frontier(0, connections, cq, mr);
+        std::fill_n(state->learn_results, connections.size(), 0xFEFEFEFEFEFEFEFE);
 
-    if (current_idx % 2 == 0) {
-        return;
+        for (size_t i = 0; i < connections.size(); ++i) {
+            ibv_sge sge{
+                .addr = reinterpret_cast<uintptr_t>(&state->learn_results[i]),
+                .length = 8,
+                .lkey = mr->lkey
+            };
+            ibv_send_wr wr{}, *bad;
+            wr.wr_id = (static_cast<uint64_t>(op) << 32) | 0x999000 | i;
+            wr.opcode = IBV_WR_RDMA_READ;
+            wr.send_flags = IBV_SEND_SIGNALED;
+            wr.sg_list = &sge;
+            wr.num_sge = 1;
+            wr.wr.rdma.remote_addr = connections[i].addr + (slot * 8);
+            wr.wr.rdma.rkey = connections[i].rkey;
+
+            if (ibv_post_send(connections[i].id->qp, &wr, &bad)) {
+                throw std::runtime_error("Failed to post learn majority reads");
+            }
+        }
+
+        int reads_done = 0;
+        ibv_wc wc{};
+        while (reads_done < static_cast<int>(connections.size())) {
+            if (ibv_poll_cq(cq, 1, &wc) > 0) {
+                if ((wc.wr_id >> 32) == static_cast<uint64_t>(op) && (wc.wr_id & 0xFFF000) == 0x999000) {
+                    reads_done++;
+                }
+            }
+        }
+
+        uint64_t winner = 0xFFFFFFFFFFFFFFFF;
+        bool quorum_met = false;
+
+        constexpr uint64_t LOCAL_SENTINEL = 0xFEFEFEFEFEFEFEFE;
+
+        for (size_t i = 0; i < connections.size(); ++i) {
+            const uint64_t val = state->learn_results[i];
+
+            if (val == LOCAL_SENTINEL) continue;
+            if (val == EMPTY_SLOT) continue;
+
+            int count = 0;
+            for (size_t j = 0; j < connections.size(); ++j) {
+                if (state->learn_results[j] == val) count++;
+            }
+
+            if (count >= QUORUM) {
+                winner = val;
+                quorum_met = true;
+                break;
+            }
+        }
+
+        if (quorum_met) return (winner == static_cast<uint64_t>(client_id));
+
+        return false;
     }
 
-    const uint64_t next_slot = current_idx + 1;
-    uint64_t* write_val = static_cast<uint64_t*>(mr->addr) + 40;
-    *write_val = static_cast<uint64_t>(client_id);
 
-    for (size_t i = 0; i < connections.size(); ++i) {
-        ibv_sge sge{reinterpret_cast<uintptr_t>(write_val), 8, mr->lkey};
-        ibv_send_wr wr{}, *bad;
-        wr.wr_id = 0x777000 | i;
-        wr.opcode = IBV_WR_RDMA_WRITE;
-        wr.send_flags = IBV_SEND_SIGNALED;
-        wr.sg_list = &sge;
-        wr.num_sge = 1;
-        wr.wr.rdma.remote_addr = connections[i].addr + (next_slot * 8);
-        wr.wr.rdma.rkey = connections[i].rkey;
-        ibv_post_send(connections[i].id->qp, &wr, &bad);
-    }
+    void advance_frontier(
+        LocalState* state,
+        const uint64_t slot,
+        const std::vector<RemoteNode>& connections,
+        const ibv_mr* mr
+    ) {
+        uint64_t* val_ptr = static_cast<uint64_t*>(mr->addr) + 30;
+        *val_ptr = slot;
 
-    int responses = 0;
-    ibv_wc wc{};
-    while (responses < QUORUM) {
-        if (ibv_poll_cq(cq, 1, &wc) > 0) {
-            if ((wc.wr_id & 0xFFF000) == 0x777000) {
-                responses++;
+        for (size_t i = 0; i < connections.size(); ++i) {
+            ibv_sge sge{
+                .addr = reinterpret_cast<uintptr_t>(&state->next_frontier),
+                .length = 8,
+                .lkey = mr->lkey
+            };
+            ibv_send_wr wr{}, *bad;
+            wr.wr_id = ADVANCE_FRONTIER_ID | i;
+            wr.opcode = IBV_WR_RDMA_WRITE;
+            wr.send_flags = IBV_SEND_SIGNALED;
+            wr.sg_list = &sge;
+            wr.num_sge = 1;
+            wr.wr.rdma.remote_addr = connections[i].addr + FRONTIER_OFFSET;
+            wr.wr.rdma.rkey = connections[i].rkey;
+            if (ibv_post_send(connections[i].id->qp, &wr, &bad)) {
+                throw std::runtime_error("Failed to advance frontier");
             }
         }
     }
 
-    advance_frontier(next_slot, connections, mr, cq);
-}
+    inline void run_synra_reset(
+        LocalState* state,
+        const int client_id,
+        const std::vector<RemoteNode>& connections,
+        ibv_cq* cq,
+        const ibv_mr* mr
+    ) {
+        const uint64_t current_idx = discover_frontier(state, 0, connections, cq, mr);
+
+        if (current_idx % 2 == 0) {
+            return;
+        }
+
+        const uint64_t next_slot = current_idx + 1;
+        uint64_t* write_val = static_cast<uint64_t*>(mr->addr) + 40;
+        *write_val = static_cast<uint64_t>(client_id);
+
+        for (size_t i = 0; i < connections.size(); ++i) {
+            ibv_sge sge{reinterpret_cast<uintptr_t>(write_val), 8, mr->lkey};
+            ibv_send_wr wr{}, *bad;
+            wr.wr_id = 0x777000 | i;
+            wr.opcode = IBV_WR_RDMA_WRITE;
+            wr.send_flags = IBV_SEND_SIGNALED;
+            wr.sg_list = &sge;
+            wr.num_sge = 1;
+            wr.wr.rdma.remote_addr = connections[i].addr + (next_slot * 8);
+            wr.wr.rdma.rkey = connections[i].rkey;
+            if (ibv_post_send(connections[i].id->qp, &wr, &bad)) {
+                throw std::runtime_error("Failed to reset");
+            }
+        }
+
+        int responses = 0;
+        ibv_wc wc{};
+        while (responses < QUORUM) {
+            if (ibv_poll_cq(cq, 1, &wc) > 0) {
+                if ((wc.wr_id & 0xFFF000) == 0x777000) {
+                    responses++;
+                }
+            }
+        }
+
+        advance_frontier(state, next_slot, connections, mr);
+    }
 }
 
 
@@ -203,27 +265,26 @@ inline void run_synra_tas_client(
     const ibv_mr* mr,
     uint64_t* latencies
 ) {
-    if (connections.empty()) return;
-
+    const auto state = static_cast<LocalState*>(mr->addr);
     for (int op = 0; op < NUM_OPS_PER_CLIENT; ++op) {
         auto start_time = std::chrono::high_resolution_clock::now();
 
         while (true) {
-            const uint64_t max_val = discover_frontier(op, connections, cq, mr);
+            const uint64_t max_val = discover_frontier(state, op, connections, cq, mr);
 
             if (max_val % 2 != 0) {
                 continue;
             }
 
             const uint64_t next_slot = max_val + 1;
-            if (commit_cas(op, next_slot, client_id, connections, cq, mr) >= QUORUM) {
-                advance_frontier(next_slot, connections, mr, cq);
+            if (commit_cas(state, op, next_slot, client_id, connections, cq, mr) >= QUORUM) {
+                advance_frontier(state, next_slot, connections, mr);
                 break;
             }
 
-            if (learn_majority(op, next_slot, client_id, connections, cq, mr)) {
+            if (learn_majority(state, op, next_slot, client_id, connections, cq, mr)) {
                 std::cout << "We slow path won and advanced slot to: " << next_slot << std::endl;
-                advance_frontier(next_slot, connections, mr, cq);
+                advance_frontier(state, next_slot, connections, mr);
                 break;
             }
 
@@ -233,6 +294,6 @@ inline void run_synra_tas_client(
         auto end_time = std::chrono::high_resolution_clock::now();
         latencies[op] = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count();
 
-        run_synra_reset(client_id, connections, cq, mr);
+        run_synra_reset(state, client_id, connections, cq, mr);
     }
 }

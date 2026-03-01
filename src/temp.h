@@ -52,10 +52,11 @@ constexpr size_t MAX_INLINE_DEPTH = 64;
 constexpr size_t CLIENT_SLOT_SIZE = 1024;
 
 
-constexpr size_t NUM_OPS = 500;
-constexpr size_t NUM_CLIENTS = 2;
+constexpr size_t NUM_OPS = 10;
+constexpr size_t NUM_CLIENTS = 1;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / NUM_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * NUM_CLIENTS;
+constexpr uint64_t EMPTY_SLOT = 0xFFFFFFFFFFFFFFFF;
 
 inline void* allocate_rdma_buffer() {
     void* ptr = mmap(nullptr, ALIGNED_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
@@ -64,7 +65,10 @@ inline void* allocate_rdma_buffer() {
         ptr = aligned_alloc(4096, ALIGNED_SIZE);
         if (!ptr) throw std::runtime_error("Critical failure: Could not allocate RDMA buffer.");
     }
-    memset(ptr, 0, ALIGNED_SIZE);
+
+    auto* slot_ptr = static_cast<uint64_t*>(ptr);
+    constexpr size_t num_uint64s = ALIGNED_SIZE / sizeof(uint64_t);
+    std::fill_n(slot_ptr, num_uint64s, 0xFFFFFFFFFFFFFFFF);
     return ptr;
 }
 

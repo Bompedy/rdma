@@ -79,7 +79,7 @@ inline void run_synra_clients() {
                         pd = ibv_alloc_pd(id->verbs);
                         if (!pd) throw std::runtime_error("ibv_alloc_pd failed");
 
-                        cq = ibv_create_cq(id->verbs, QP_DEPTH * (int)CLUSTER_NODES.size(), nullptr, nullptr, 0);
+                        cq = ibv_create_cq(id->verbs, QP_DEPTH * static_cast<int>(CLUSTER_NODES.size()), nullptr, nullptr, 0);
                         if (!cq) throw std::runtime_error("ibv_create_cq failed");
 
                         mr = ibv_reg_mr(pd, client_mem, FINAL_POOL_SIZE,
