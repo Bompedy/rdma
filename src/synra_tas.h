@@ -304,12 +304,12 @@ inline void run_synra_tas_client(
             }
 
             if (learn_majority(state, op, next_slot, client_id, connections, cq, mr)) {
-                // std::cout << client_id << " - we slow path won and advanced slot to: " << next_slot << std::endl;
+                std::cout << client_id << " - we slow path won and advanced slot to: " << next_slot << std::endl;
                 advance_frontier(state, next_slot, connections, mr);
                 break;
             }
 
-            // std::cout << client_id << " - we slow path lost on slot: " << next_slot << std::endl;
+            std::cout << client_id << " - we slow path lost on slot: " << next_slot << std::endl;
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
