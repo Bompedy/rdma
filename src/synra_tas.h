@@ -265,7 +265,7 @@ namespace {
 
         int responses = 0;
         ibv_wc wc{};
-        while (responses < QUORUM) {
+        while (responses < connections.size()) {
             if (ibv_poll_cq(cq, 1, &wc) > 0) {
                 if ((wc.wr_id & 0xFFF000) == 0x777000) {
                     responses++;
@@ -285,8 +285,17 @@ inline void run_synra_tas_client(
     const ibv_mr* mr,
     uint64_t* latencies
 ) {
+    ibv_wc wc_batch[32];
     const auto state = static_cast<LocalState*>(mr->addr);
     for (int op = 0; op < NUM_OPS_PER_CLIENT; ++op) {
+
+        int no_responses = 0;
+        while (no_responses < 5) {
+            const int n = ibv_poll_cq(cq, 1, &wc_batch[0]);
+            if (n < 0) throw std::runtime_error("Poll failed");
+            if (n == 0) ++no_responses;
+        }
+
         auto start_time = std::chrono::high_resolution_clock::now();
 
         while (true) {
