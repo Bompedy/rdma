@@ -290,7 +290,7 @@ inline void run_synra_tas_client(
     for (int op = 0; op < NUM_OPS_PER_CLIENT; ++op) {
 
         int no_responses = 0;
-        while (no_responses < 5) {
+        while (no_responses < 50) {
             const int n = ibv_poll_cq(cq, 1, &wc_batch[0]);
             if (n < 0) throw std::runtime_error("Poll failed");
             if (n == 0) ++no_responses;
