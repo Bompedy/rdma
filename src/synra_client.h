@@ -140,7 +140,7 @@ inline void run_synra_clients() {
                 std::cout << "[Client " << i << "] Connected to all followers! " << "\n";
                 start_latch.wait();
                 uint64_t* latencies = &((*all_latencies)[i * NUM_OPS_PER_CLIENT]);
-                run_synra_cas_client(i, connections, cq, mr, latencies);
+                run_synra_tas_client(i, connections, cq, mr, latencies);
             } catch (const std::exception& e) {
                 std::cerr << "Thread " << i << " error: " << e.what() << "\n";
             }
