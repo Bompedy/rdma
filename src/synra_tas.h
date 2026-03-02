@@ -285,24 +285,15 @@ inline void run_synra_tas_client(
     const ibv_mr* mr,
     uint64_t* latencies
 ) {
-    ibv_wc wc_batch[32];
     const auto state = static_cast<LocalState*>(mr->addr);
     for (int op = 0; op < NUM_OPS_PER_CLIENT; ++op) {
-
-        int no_responses = 0;
-        while (no_responses < 50) {
-            const int n = ibv_poll_cq(cq, 1, &wc_batch[0]);
-            if (n < 0) throw std::runtime_error("Poll failed");
-            if (n == 0) ++no_responses;
-        }
-
         auto start_time = std::chrono::high_resolution_clock::now();
 
         while (true) {
             const uint64_t max_val = discover_frontier(state, op, connections, cq, mr);
 
             if (max_val % 2 != 0) {
-                std::cout << "It hits this?" << std::endl;
+                // std::cout << "It hits this?" << std::endl;
                 continue;
             }
 
@@ -314,12 +305,12 @@ inline void run_synra_tas_client(
             }
 
             if (learn_majority(state, op, next_slot, client_id, connections, cq, mr)) {
-                std::cout << client_id << " - we slow path won and advanced slot to: " << next_slot << std::endl;
+                // std::cout << client_id << " - we slow path won and advanced slot to: " << next_slot << std::endl;
                 advance_frontier(state, next_slot, connections, mr);
                 break;
             }
 
-            std::cout << client_id << " - we slow path lost on slot: " << next_slot << std::endl;
+            // std::cout << client_id << " - we slow path lost on slot: " << next_slot << std::endl;
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();

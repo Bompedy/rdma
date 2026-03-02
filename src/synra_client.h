@@ -158,9 +158,17 @@ inline void run_synra_clients() {
 
     std::sort(all_latencies->begin(), all_latencies->end());
 
-    const auto duration_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count();
-    const double seconds = duration_ns / 1'000'000'000.0;
-    const double throughput = NUM_TOTAL_OPS / seconds;
+    uint64_t total_active_ns = 0;
+    for (const auto& lat : *all_latencies) {
+        total_active_ns += lat;
+    }
+
+    const double active_seconds = total_active_ns / 1'000'000'000.0;
+    const double throughput = NUM_TOTAL_OPS / active_seconds;
+
+    // const auto duration_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count();
+    // const double seconds = duration_ns / 1'000'000'000.0;
+    // const double throughput = NUM_TOTAL_OPS / seconds;
 
     auto get_p = [&](double p) {
         size_t idx = static_cast<size_t>(p * (NUM_TOTAL_OPS - 1));
@@ -184,7 +192,7 @@ inline void run_synra_clients() {
     std::cout << "Clients:      " << std::setw(10) << NUM_CLIENTS << "\n";
     std::cout << "Ops/Client:   " << std::setw(10) << NUM_OPS_PER_CLIENT << "\n";
     std::cout << "Total Ops:    " << std::setw(10) << NUM_TOTAL_OPS << "\n";
-    std::cout << "Total Time:   " << std::setw(10) << std::fixed << std::setprecision(3) << seconds << " s\n";
+    std::cout << "Total Time:   " << std::setw(10) << std::fixed << std::setprecision(3) << active_seconds << " s\n";
     std::cout << "Throughput:   " << std::setw(10) << std::fixed << std::setprecision(0) << throughput << " ops/s\n";
     std::cout << std::string(42, '-') << "\n";
     std::cout << "LATENCY (Microseconds)\n";
