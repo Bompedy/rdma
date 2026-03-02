@@ -158,17 +158,24 @@ inline void run_synra_clients() {
 
     std::sort(all_latencies->begin(), all_latencies->end());
 
-    uint64_t total_active_ns = 0;
-    for (const auto& lat : *all_latencies) {
-        total_active_ns += lat;
+    std::vector<double> client_durations_s(NUM_CLIENTS, 0.0);
+    for (int i = 0; i < NUM_CLIENTS; ++i) {
+        uint64_t client_sum_ns = 0;
+        for (int op = 0; op < NUM_OPS_PER_CLIENT; ++op) {
+            client_sum_ns += (*all_latencies)[i * NUM_OPS_PER_CLIENT + op];
+        }
+        client_durations_s[i] = client_sum_ns / 1'000'000'000.0;
     }
 
-    const double active_seconds = total_active_ns / 1'000'000'000.0;
-    const double throughput = NUM_TOTAL_OPS / active_seconds;
+    // 2. Calculate Aggregate Throughput
+    double total_throughput = 0;
+    for (int i = 0; i < NUM_CLIENTS; ++i) {
+        // This client did X ops in Y "active" seconds
+        total_throughput += (NUM_OPS_PER_CLIENT / client_durations_s[i]);
+    }
 
-    // const auto duration_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count();
-    // const double seconds = duration_ns / 1'000'000'000.0;
-    // const double throughput = NUM_TOTAL_OPS / seconds;
+    // 3. The "Effective" Total Time for the benchmark (Protocol Only)
+    double effective_total_time = NUM_TOTAL_OPS / total_throughput;
 
     auto get_p = [&](double p) {
         size_t idx = static_cast<size_t>(p * (NUM_TOTAL_OPS - 1));
@@ -192,8 +199,8 @@ inline void run_synra_clients() {
     std::cout << "Clients:      " << std::setw(10) << NUM_CLIENTS << "\n";
     std::cout << "Ops/Client:   " << std::setw(10) << NUM_OPS_PER_CLIENT << "\n";
     std::cout << "Total Ops:    " << std::setw(10) << NUM_TOTAL_OPS << "\n";
-    std::cout << "Total Time:   " << std::setw(10) << std::fixed << std::setprecision(3) << active_seconds << " s\n";
-    std::cout << "Throughput:   " << std::setw(10) << std::fixed << std::setprecision(0) << throughput << " ops/s\n";
+    std::cout << "Total Time:   " << std::setw(10) << std::fixed << std::setprecision(3) << effective_total_time << " s\n";
+    std::cout << "Throughput:   " << std::setw(10) << std::fixed << std::setprecision(0) << total_throughput << " ops/s\n";
     std::cout << std::string(42, '-') << "\n";
     std::cout << "LATENCY (Microseconds)\n";
     std::cout << "Mean:         " << std::setw(10) << std::setprecision(2) << mean << " us\n";
