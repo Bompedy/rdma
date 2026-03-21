@@ -7,7 +7,8 @@
 #include <string>
 #include <rdma/rdma_cma.h>
 #include <infiniband/verbs.h>
-#include "common.h"
+
+#include "rdma/common.h"
 
 struct RemoteNode;
 
