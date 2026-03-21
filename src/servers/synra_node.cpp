@@ -170,6 +170,8 @@ void SynraNode::run() {
         recovery_triggered_ = true;
         recovery_epoch_++;
         reset_client_quiesced();
+        std::cout << "[SynraNode " << node_id_ << "] Starting baseline reset epoch="
+                  << recovery_epoch_ << "\n";
         RecoveryControlMessage reset{};
         reset.type = RecoveryMsgType::baseline_reset_start;
         reset.epoch = recovery_epoch_;
@@ -284,6 +286,8 @@ void SynraNode::run() {
         sent_recovery_done = false;
         reset_report_state();
         reset_client_quiesced();
+        std::cout << "[SynraNode " << node_id_ << "] Starting failover round "
+                  << (current_round + 1) << " epoch=" << recovery_epoch_ << "\n";
 
         RecoveryControlMessage start{};
         start.type = RecoveryMsgType::recovery_start;
@@ -301,6 +305,8 @@ void SynraNode::run() {
         if (node_id_ != RECOVERY_COORD_NODE) {
             return;
         }
+        std::cout << "[SynraNode " << node_id_ << "] All clients quiesced for epoch "
+                  << recovery_epoch_ << ", switching permissions\n";
         reregister_recovery_log_readonly();
         install_local_report();
         reregister_recovery_regions_writable();
@@ -417,6 +423,8 @@ void SynraNode::run() {
             if (node_id_ == RECOVERY_COORD_NODE) {
                 break;
             }
+            std::cout << "[SynraNode " << node_id_ << "] Received recovery_switch epoch="
+                      << msg.epoch << "\n";
             reregister_recovery_log_readonly();
             install_local_report();
             reregister_recovery_regions_writable();
@@ -552,6 +560,8 @@ void SynraNode::run() {
                         && sender_id < TOTAL_CLIENTS
                         && msg.epoch == recovery_epoch_) {
                         client_quiesced[sender_id] = true;
+                        std::cout << "[SynraNode " << node_id_ << "] Client " << sender_id
+                                  << " quiesced for epoch " << msg.epoch << "\n";
                     }
                 } else {
                     handle_peer_control_message(msg, sender_id);

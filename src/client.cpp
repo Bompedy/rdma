@@ -135,12 +135,16 @@ void Client::send_control_message(const size_t conn_index, const RecoveryControl
     ibv_send_wr wr{}, *bad_wr = nullptr;
     wr.wr_id = 0;
     wr.opcode = IBV_WR_SEND;
-    wr.send_flags = IBV_SEND_INLINE;
+    wr.send_flags = 0;
     wr.sg_list = &sge;
     wr.num_sge = 1;
 
     if (ibv_post_send(connections_[conn_index].id->qp, &wr, &bad_wr)) {
-        throw std::runtime_error("Client: failed to send control message");
+        throw std::runtime_error(
+            "Client: failed to send control message type="
+            + std::to_string(static_cast<int>(msg.type))
+            + " conn_index=" + std::to_string(conn_index)
+            + " size=" + std::to_string(sizeof(RecoveryControlMessage)));
     }
 }
 
@@ -167,6 +171,9 @@ void Client::handle_control_message(const RecoveryControlMessage& msg, const uin
             recovery_route_.frontier_host = msg.replacement_node;
             recovery_retry_pending_ = true;
             recovery_quiesce_sent_ = false;
+            std::cout << "[Client " << id_ << "] Received "
+                      << (msg.type == RecoveryMsgType::recovery_start ? "recovery_start" : "baseline_reset_start")
+                      << " epoch=" << msg.epoch << "\n";
         }
         break;
     case RecoveryMsgType::recovery_switch:
@@ -174,6 +181,8 @@ void Client::handle_control_message(const RecoveryControlMessage& msg, const uin
     case RecoveryMsgType::new_creds:
         if (msg.lock_id == RECOVERY_TARGET_LOCK) {
             apply_new_creds(msg);
+            std::cout << "[Client " << id_ << "] Installed new creds epoch=" << msg.epoch
+                      << " frontier_host=" << msg.frontier_host << "\n";
         }
         break;
     case RecoveryMsgType::recovery_done:
@@ -190,6 +199,8 @@ void Client::handle_control_message(const RecoveryControlMessage& msg, const uin
             if (msg.turn_cred.addr != 0) {
                 recovery_route_.turn = msg.turn_cred;
             }
+            std::cout << "[Client " << id_ << "] Recovery done epoch=" << msg.epoch
+                      << " frontier_host=" << msg.frontier_host << "\n";
         }
         break;
     case RecoveryMsgType::experiment_done:
@@ -224,6 +235,8 @@ void Client::maybe_send_recovery_quiesced(const size_t active_ops) {
         msg.frontier_host = recovery_route_.frontier_host;
         msg.live_mask = recovery_route_.live_mask;
         send_control_message(i, msg);
+        std::cout << "[Client " << id_ << "] Sent client_quiesced epoch="
+                  << msg.epoch << " to node " << connections_[i].node_id << "\n";
         recovery_quiesce_sent_ = true;
         return;
     }
