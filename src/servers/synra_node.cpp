@@ -201,6 +201,18 @@ void SynraNode::run() {
         return true;
     };
 
+    auto all_live_replicas_reported = [&](const uint64_t live_mask) {
+        for (size_t node = 0; node < CLUSTER_NODES.size(); ++node) {
+            if (!recovery_live_mask_contains(live_mask, static_cast<uint32_t>(node))) {
+                continue;
+            }
+            if (!recovery_report_received_[node]) {
+                return false;
+            }
+        }
+        return true;
+    };
+
     auto process_control_message = [&](const RecoveryControlMessage& msg, const bool from_client, const uint32_t sender_id) {
         if (from_client) {
             if (msg.type == RecoveryMsgType::client_quiesced
@@ -289,7 +301,8 @@ void SynraNode::run() {
             size_t chosen_count = 0;
             for (size_t node = 0; node < CLUSTER_NODES.size(); ++node) {
                 if (static_cast<uint32_t>(node) == RECOVERY_FAILED_NODE
-                    || !recovery_live_mask_contains(live_mask, static_cast<uint32_t>(node))) {
+                    || !recovery_live_mask_contains(live_mask, static_cast<uint32_t>(node))
+                    || !recovery_report_received_[node]) {
                     continue;
                 }
                 const uint64_t candidate = (static_cast<uint32_t>(node) == node_id_)
@@ -541,7 +554,7 @@ void SynraNode::run() {
         if (node_id_ != RECOVERY_COORD_NODE || !recovery_triggered_ || published_new_creds) {
             return false;
         }
-        if (received_report_count(recovery_report_received_) < QUORUM) {
+        if (!all_live_replicas_reported(surviving_live_mask())) {
             return false;
         }
 
