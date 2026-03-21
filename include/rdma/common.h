@@ -319,11 +319,13 @@ enum class RecoveryMsgType : uint8_t {
     invalid = 0,
     go = 1,
     recovery_start = 2,
-    replica_report = 3,
-    new_creds = 4,
-    recovery_done = 5,
-    baseline_reset_start = 6,
-    experiment_done = 7,
+    recovery_switch = 3,
+    replica_report = 4,
+    new_creds = 5,
+    recovery_done = 6,
+    baseline_reset_start = 7,
+    experiment_done = 8,
+    client_quiesced = 9,
 };
 
 struct RecoveryControlMessage {

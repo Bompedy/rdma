@@ -14,8 +14,9 @@ constexpr uint64_t kCopyWrTag = 0xE100000000000000ULL;
 enum class CoordinatorPhase {
     warmup,
     waiting_detection,
+    waiting_for_client_quiesce,
     collecting_reports,
-    reset_quiesce,
+    reset_waiting_for_client_quiesce,
     round_gap,
     done,
 };
@@ -96,6 +97,7 @@ void SynraNode::run() {
     bool published_new_creds = false;
     bool sent_recovery_done = false;
     std::optional<std::chrono::steady_clock::time_point> exit_deadline;
+    std::array<bool, TOTAL_CLIENTS> client_quiesced{};
 
     auto reset_report_state = [&]() {
         recovery_report_received_.fill(false);
@@ -105,6 +107,19 @@ void SynraNode::run() {
         for (auto& cred : recovery_log_creds_) {
             cred = {};
         }
+    };
+
+    auto reset_client_quiesced = [&]() {
+        client_quiesced.fill(false);
+    };
+
+    auto all_clients_quiesced = [&]() {
+        for (uint32_t i = 0; i < TOTAL_CLIENTS; ++i) {
+            if (!client_quiesced[i]) {
+                return false;
+            }
+        }
+        return true;
     };
 
     auto install_local_report = [&]() {
@@ -154,6 +169,7 @@ void SynraNode::run() {
     auto broadcast_reset_start = [&]() {
         recovery_triggered_ = true;
         recovery_epoch_++;
+        reset_client_quiesced();
         RecoveryControlMessage reset{};
         reset.type = RecoveryMsgType::baseline_reset_start;
         reset.epoch = recovery_epoch_;
@@ -227,25 +243,6 @@ void SynraNode::run() {
             return;
         }
 
-        broadcast_reset_start();
-        const auto reset_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(reset_quiesce_ms);
-        while (std::chrono::steady_clock::now() < reset_deadline) {
-            ibv_wc wc[16];
-            const int polled = ibv_poll_cq(cq_, 16, wc);
-            if (polled < 0) {
-                throw std::runtime_error("SynraNode: poll failed during reset quiesce");
-            }
-            for (int i = 0; i < polled; ++i) {
-                if ((wc[i].opcode & IBV_WC_RECV) == 0) {
-                    continue;
-                }
-                RecoveryControlMessage msg{};
-                bool from_client = false;
-                uint32_t sender_id = 0;
-                poll_control_completion(wc[i], msg, from_client, sender_id);
-            }
-        }
-
         post_copy_write(1, local_frontier_ptr(buf_), sizeof(uint64_t), peers_[RECOVERY_FAILED_NODE].prototype_frontier);
         post_copy_write(2, local_turn_ptr(buf_), sizeof(uint64_t), peers_[RECOVERY_FAILED_NODE].prototype_turn);
         post_copy_write(3, local_log_ptr(buf_), RECOVERY_LOG_REGION_SIZE, peers_[RECOVERY_FAILED_NODE].prototype_log);
@@ -286,11 +283,7 @@ void SynraNode::run() {
         published_new_creds = false;
         sent_recovery_done = false;
         reset_report_state();
-
-        reregister_recovery_log_readonly();
-        install_local_report();
-        reregister_recovery_regions_writable();
-        recovery_log_creds_[node_id_] = server_creds_.prototype_log;
+        reset_client_quiesced();
 
         RecoveryControlMessage start{};
         start.type = RecoveryMsgType::recovery_start;
@@ -302,6 +295,27 @@ void SynraNode::run() {
         start.frontier_host = RECOVERY_REPLACEMENT_NODE;
         start.live_mask = surviving_live_mask();
         broadcast_control_message(start, false);
+    };
+
+    auto begin_permission_switch = [&]() {
+        if (node_id_ != RECOVERY_COORD_NODE) {
+            return;
+        }
+        reregister_recovery_log_readonly();
+        install_local_report();
+        reregister_recovery_regions_writable();
+        recovery_log_creds_[node_id_] = server_creds_.prototype_log;
+
+        RecoveryControlMessage switch_msg{};
+        switch_msg.type = RecoveryMsgType::recovery_switch;
+        switch_msg.epoch = recovery_epoch_;
+        switch_msg.lock_id = RECOVERY_TARGET_LOCK;
+        switch_msg.from_node = node_id_;
+        switch_msg.failed_node = RECOVERY_FAILED_NODE;
+        switch_msg.replacement_node = RECOVERY_REPLACEMENT_NODE;
+        switch_msg.frontier_host = RECOVERY_REPLACEMENT_NODE;
+        switch_msg.live_mask = surviving_live_mask();
+        broadcast_control_message(switch_msg, false);
     };
 
     auto maybe_publish_failover_creds = [&]() {
@@ -398,6 +412,11 @@ void SynraNode::run() {
             }
             recovery_triggered_ = true;
             recovery_epoch_ = std::max(recovery_epoch_, msg.epoch);
+            break;
+        case RecoveryMsgType::recovery_switch:
+            if (node_id_ == RECOVERY_COORD_NODE) {
+                break;
+            }
             reregister_recovery_log_readonly();
             install_local_report();
             reregister_recovery_regions_writable();
@@ -429,6 +448,7 @@ void SynraNode::run() {
         case RecoveryMsgType::experiment_done:
             exit_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(RECOVERY_EXPERIMENT_DONE_GRACE_MS);
             break;
+        case RecoveryMsgType::client_quiesced:
         case RecoveryMsgType::go:
         case RecoveryMsgType::invalid:
             break;
@@ -451,18 +471,27 @@ void SynraNode::run() {
                 if (std::chrono::duration_cast<std::chrono::milliseconds>(now - failure_injected_at).count() >= detection_delay_ms) {
                     recovery_started_at = now;
                     begin_failover_round();
-                    phase = CoordinatorPhase::collecting_reports;
+                    phase = CoordinatorPhase::waiting_for_client_quiesce;
                     phase_started_at = now;
+                }
+                break;
+            case CoordinatorPhase::waiting_for_client_quiesce:
+                if (all_clients_quiesced()) {
+                    begin_permission_switch();
+                    phase = CoordinatorPhase::collecting_reports;
+                    phase_started_at = std::chrono::steady_clock::now();
                 }
                 break;
             case CoordinatorPhase::collecting_reports:
                 if (maybe_publish_failover_creds() && finish_failover_round()) {
-                    phase = CoordinatorPhase::reset_quiesce;
+                    broadcast_reset_start();
+                    phase = CoordinatorPhase::reset_waiting_for_client_quiesce;
                     phase_started_at = std::chrono::steady_clock::now();
                 }
                 break;
-            case CoordinatorPhase::reset_quiesce:
-                if (std::chrono::duration_cast<std::chrono::milliseconds>(now - phase_started_at).count() >= reset_quiesce_ms) {
+            case CoordinatorPhase::reset_waiting_for_client_quiesce:
+                if (all_clients_quiesced()
+                    && std::chrono::duration_cast<std::chrono::milliseconds>(now - phase_started_at).count() >= reset_quiesce_ms) {
                     reset_to_baseline();
                     current_round++;
                     phase = current_round >= num_rounds ? CoordinatorPhase::done : CoordinatorPhase::round_gap;
@@ -518,7 +547,13 @@ void SynraNode::run() {
                 if (!poll_control_completion(comp, msg, from_client, sender_id)) {
                     continue;
                 }
-                if (!from_client) {
+                if (from_client) {
+                    if (msg.type == RecoveryMsgType::client_quiesced
+                        && sender_id < TOTAL_CLIENTS
+                        && msg.epoch == recovery_epoch_) {
+                        client_quiesced[sender_id] = true;
+                    }
+                } else {
                     handle_peer_control_message(msg, sender_id);
                 }
                 continue;

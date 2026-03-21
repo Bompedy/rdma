@@ -72,6 +72,7 @@ Client::~Client() {
         if (conn.id && conn.id->qp) rdma_destroy_qp(conn.id);
         if (conn.id) rdma_destroy_id(conn.id);
     }
+    if (control_send_mr_) ibv_dereg_mr(control_send_mr_);
     if (control_mr_) ibv_dereg_mr(control_mr_);
     if (mr_) ibv_dereg_mr(mr_);
     if (cq_) ibv_destroy_cq(cq_);
@@ -120,6 +121,29 @@ void Client::post_control_recvs(const size_t conn_index) {
     }
 }
 
+void Client::send_control_message(const size_t conn_index, const RecoveryControlMessage& msg) {
+    if (conn_index >= connections_.size()) {
+        throw std::runtime_error("Client::send_control_message: connection index out of range");
+    }
+    control_send_buffers_[conn_index] = msg;
+
+    ibv_sge sge{};
+    sge.addr = reinterpret_cast<uintptr_t>(&control_send_buffers_[conn_index]);
+    sge.length = sizeof(RecoveryControlMessage);
+    sge.lkey = control_send_mr_->lkey;
+
+    ibv_send_wr wr{}, *bad_wr = nullptr;
+    wr.wr_id = 0;
+    wr.opcode = IBV_WR_SEND;
+    wr.send_flags = IBV_SEND_INLINE;
+    wr.sg_list = &sge;
+    wr.num_sge = 1;
+
+    if (ibv_post_send(connections_[conn_index].id->qp, &wr, &bad_wr)) {
+        throw std::runtime_error("Client: failed to send control message");
+    }
+}
+
 void Client::apply_new_creds(const RecoveryControlMessage& msg) {
     recovery_route_.epoch = msg.epoch;
     recovery_route_.frontier_host = msg.frontier_host;
@@ -142,7 +166,10 @@ void Client::handle_control_message(const RecoveryControlMessage& msg, const uin
             recovery_route_.live_mask = msg.live_mask;
             recovery_route_.frontier_host = msg.replacement_node;
             recovery_retry_pending_ = true;
+            recovery_quiesce_sent_ = false;
         }
+        break;
+    case RecoveryMsgType::recovery_switch:
         break;
     case RecoveryMsgType::new_creds:
         if (msg.lock_id == RECOVERY_TARGET_LOCK) {
@@ -153,6 +180,7 @@ void Client::handle_control_message(const RecoveryControlMessage& msg, const uin
         if (msg.lock_id == RECOVERY_TARGET_LOCK) {
             recovery_route_.epoch = std::max(recovery_route_.epoch, msg.epoch);
             recovery_route_.recovering = false;
+            recovery_quiesce_sent_ = false;
             recovery_route_.frontier_host = msg.frontier_host;
             recovery_route_.live_mask = msg.live_mask;
             recovery_route_.log_creds = msg.log_creds;
@@ -167,13 +195,39 @@ void Client::handle_control_message(const RecoveryControlMessage& msg, const uin
     case RecoveryMsgType::experiment_done:
         experiment_done_ = true;
         recovery_route_.recovering = false;
+        recovery_quiesce_sent_ = false;
         break;
+    case RecoveryMsgType::client_quiesced:
     case RecoveryMsgType::replica_report:
     case RecoveryMsgType::invalid:
         break;
     }
 
     (void)remote_node;
+}
+
+void Client::maybe_send_recovery_quiesced(const size_t active_ops) {
+    if (!recovery_route_.recovering || recovery_quiesce_sent_ || active_ops != 0) {
+        return;
+    }
+    for (size_t i = 0; i < connections_.size(); ++i) {
+        if (connections_[i].node_id != RECOVERY_COORD_NODE) {
+            continue;
+        }
+        RecoveryControlMessage msg{};
+        msg.type = RecoveryMsgType::client_quiesced;
+        msg.epoch = recovery_route_.epoch;
+        msg.lock_id = RECOVERY_TARGET_LOCK;
+        msg.from_node = id_;
+        msg.failed_node = RECOVERY_FAILED_NODE;
+        msg.replacement_node = recovery_route_.frontier_host;
+        msg.frontier_host = recovery_route_.frontier_host;
+        msg.live_mask = recovery_route_.live_mask;
+        send_control_message(i, msg);
+        recovery_quiesce_sent_ = true;
+        return;
+    }
+    throw std::runtime_error("Client: no connection to recovery coordinator");
 }
 
 bool Client::handle_control_completion(const ibv_wc& wc) {
@@ -292,6 +346,13 @@ void Client::connect(const std::vector<std::string>& node_ips, const uint16_t po
                 control_recv_buffers_.size() * sizeof(RecoveryControlMessage),
                 IBV_ACCESS_LOCAL_WRITE);
             if (!control_mr_) throw std::runtime_error("ibv_reg_mr failed for client control buffers");
+
+            control_send_buffers_.resize(node_ips.size());
+            control_send_mr_ = ibv_reg_mr(
+                pd_, control_send_buffers_.data(),
+                control_send_buffers_.size() * sizeof(RecoveryControlMessage),
+                IBV_ACCESS_LOCAL_WRITE);
+            if (!control_send_mr_) throw std::runtime_error("ibv_reg_mr failed for client control send buffers");
         }
 
         ibv_qp_init_attr qp_attr{};

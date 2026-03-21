@@ -732,6 +732,7 @@ void run_ticket_faa_lock_pipeline(
                 op.phase = TicketFaaPhase::idle;
                 active--;
             }
+            client.maybe_send_recovery_quiesced(active);
         } else {
             for (size_t slot = 0; slot < ops.size(); ++slot) {
                 if (!client.experiment_done() && ops[slot].retry_pending && !ops[slot].active) {

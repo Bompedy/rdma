@@ -34,11 +34,13 @@ public:
     [[nodiscard]] bool experiment_done() const { return experiment_done_; }
 
     bool handle_control_completion(const ibv_wc& wc);
+    void maybe_send_recovery_quiesced(size_t active_ops);
     void mark_recovery_retry_pending();
 
 private:
     void init_recovery_route();
     void post_control_recvs(size_t conn_index);
+    void send_control_message(size_t conn_index, const RecoveryControlMessage& msg);
     void handle_control_message(const RecoveryControlMessage& msg, uint32_t remote_node);
     void apply_new_creds(const RecoveryControlMessage& msg);
 
@@ -49,12 +51,15 @@ private:
     ibv_cq* cq_ = nullptr;
     ibv_mr* mr_ = nullptr;
     ibv_mr* control_mr_ = nullptr;
+    ibv_mr* control_send_mr_ = nullptr;
     void* buf_ = nullptr;
     size_t buffer_size_;
     std::vector<RemoteNode> connections_;
     std::vector<RecoveryControlMessage> control_recv_buffers_;
+    std::vector<RecoveryControlMessage> control_send_buffers_;
     RecoveryRoute recovery_route_{};
     uint32_t go_messages_ = 0;
     bool recovery_retry_pending_ = false;
     bool experiment_done_ = false;
+    bool recovery_quiesce_sent_ = false;
 };
