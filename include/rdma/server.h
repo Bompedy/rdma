@@ -26,7 +26,9 @@ protected:
 
     void init_recovery_regions();
     void register_recovery_regions();
+    void reregister_recovery_frontiers_writable();
     void reregister_recovery_log_readonly();
+    void reregister_recovery_log_writable();
     void reregister_recovery_regions_writable();
     void post_control_recvs();
     void send_control_message(rdma_cm_id* cm_id, const RecoveryControlMessage& msg, uint64_t wr_id = 0);

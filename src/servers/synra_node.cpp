@@ -219,6 +219,12 @@ void SynraNode::run() {
         if (node_id >= peers_.size() || peers_[node_id].cm_id == nullptr) {
             throw std::runtime_error("SynraNode: invalid peer for recovery read");
         }
+        const RecoveryRegionCred remote_log = recovery_log_creds_[node_id].addr != 0
+            ? recovery_log_creds_[node_id]
+            : peers_[node_id].prototype_log;
+        if (remote_log.addr == 0 || remote_log.rkey == 0) {
+            throw std::runtime_error("SynraNode: missing remote recovery log credentials");
+        }
         auto* scratch = reinterpret_cast<uint64_t*>(static_cast<uint8_t*>(buf_) + recovery_metadata_offset());
         *scratch = EMPTY_SLOT;
 
@@ -234,8 +240,8 @@ void SynraNode::run() {
         wr.send_flags = IBV_SEND_SIGNALED;
         wr.sg_list = &sge;
         wr.num_sge = 1;
-        wr.wr.rdma.remote_addr = peers_[node_id].prototype_log.addr + slot * ENTRY_SIZE;
-        wr.wr.rdma.rkey = peers_[node_id].prototype_log.rkey;
+        wr.wr.rdma.remote_addr = remote_log.addr + slot * ENTRY_SIZE;
+        wr.wr.rdma.rkey = remote_log.rkey;
         if (ibv_post_send(peers_[node_id].cm_id->qp, &wr, &bad_wr)) {
             throw std::runtime_error("SynraNode: failed to post recovery read");
         }
@@ -317,6 +323,7 @@ void SynraNode::run() {
         repaired.replacement_node = RECOVERY_REPLACEMENT_NODE;
         repaired.frontier_host = RECOVERY_REPLACEMENT_NODE;
         repaired.live_mask = surviving_live_mask();
+        repaired.log_creds[node_id_] = server_creds_.prototype_log;
         send_control_message(peers_[RECOVERY_COORD_NODE].cm_id, repaired);
     };
 
@@ -507,7 +514,7 @@ void SynraNode::run() {
                   << recovery_epoch_ << ", switching permissions\n";
         reregister_recovery_log_readonly();
         install_local_report();
-        reregister_recovery_regions_writable();
+        reregister_recovery_frontiers_writable();
         recovery_log_creds_[node_id_] = server_creds_.prototype_log;
 
         RecoveryControlMessage switch_msg{};
@@ -555,6 +562,8 @@ void SynraNode::run() {
         const uint64_t recovered_turn = quorum_median(turn_values);
         install_recovered_frontiers(recovered_cas_frontier, recovered_ticket_frontier, recovered_turn);
         repair_local_log_from_quorum(surviving_live_mask(), recovered_cas_frontier, recovered_ticket_frontier);
+        reregister_recovery_log_writable();
+        recovery_log_creds_[node_id_] = server_creds_.prototype_log;
         recovery_repair_received_[node_id_] = true;
 
         RecoveryControlMessage creds{};
@@ -646,7 +655,7 @@ void SynraNode::run() {
                       << msg.epoch << "\n";
             reregister_recovery_log_readonly();
             install_local_report();
-            reregister_recovery_regions_writable();
+            reregister_recovery_frontiers_writable();
             recovery_log_creds_[node_id_] = server_creds_.prototype_log;
             send_report_to_coordinator();
             break;
@@ -662,6 +671,7 @@ void SynraNode::run() {
         case RecoveryMsgType::replica_repaired:
             if (node_id_ == RECOVERY_COORD_NODE && sender_id < MAX_REPLICAS) {
                 recovery_repair_received_[sender_id] = true;
+                recovery_log_creds_[sender_id] = msg.log_creds[sender_id];
             }
             break;
         case RecoveryMsgType::baseline_reset_start:
@@ -672,6 +682,8 @@ void SynraNode::run() {
             recovery_epoch_ = std::max(recovery_epoch_, msg.epoch);
             install_recovered_frontiers(msg.cas_frontier, msg.ticket_frontier, msg.ticket_turn);
             repair_local_log_from_quorum(msg.live_mask, msg.cas_frontier, msg.ticket_frontier);
+            reregister_recovery_log_writable();
+            recovery_log_creds_[node_id_] = server_creds_.prototype_log;
             recovery_repair_received_[node_id_] = true;
             send_repaired_to_coordinator();
             break;

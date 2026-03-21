@@ -164,7 +164,7 @@ void Server::reregister_recovery_log_readonly() {
     server_creds_.prototype_log.rkey = recovery_log_mr_->rkey;
 }
 
-void Server::reregister_recovery_regions_writable() {
+void Server::reregister_recovery_frontiers_writable() {
     auto* base = static_cast<uint8_t*>(buf_);
     if (recovery_frontier_mr_) {
         ibv_dereg_mr(recovery_frontier_mr_);
@@ -174,11 +174,58 @@ void Server::reregister_recovery_regions_writable() {
         ibv_dereg_mr(recovery_turn_mr_);
         recovery_turn_mr_ = nullptr;
     }
+
+    recovery_frontier_mr_ = ibv_reg_mr(
+        pd_,
+        base + recovery_frontier_control_offset(),
+        RECOVERY_FRONTIER_REGION_SIZE,
+        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
+    if (!recovery_frontier_mr_) {
+        throw std::runtime_error("Server: failed to reregister recovery frontier MR writable");
+    }
+
+    recovery_turn_mr_ = ibv_reg_mr(
+        pd_,
+        base + recovery_frontier_turn_offset(),
+        RECOVERY_TURN_REGION_SIZE,
+        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
+    if (!recovery_turn_mr_) {
+        throw std::runtime_error("Server: failed to reregister recovery turn MR writable");
+    }
+
+    server_creds_.prototype_frontier = {
+        reinterpret_cast<uintptr_t>(base + recovery_frontier_control_offset()),
+        recovery_frontier_mr_->rkey,
+    };
+    server_creds_.prototype_turn = {
+        reinterpret_cast<uintptr_t>(base + recovery_frontier_turn_offset()),
+        recovery_turn_mr_->rkey,
+    };
+}
+
+void Server::reregister_recovery_log_writable() {
+    auto* base = static_cast<uint8_t*>(buf_);
     if (recovery_log_mr_) {
         ibv_dereg_mr(recovery_log_mr_);
         recovery_log_mr_ = nullptr;
     }
-    register_recovery_regions();
+    recovery_log_mr_ = ibv_reg_mr(
+        pd_,
+        base + recovery_log_region_offset(),
+        RECOVERY_LOG_REGION_SIZE,
+        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
+    if (!recovery_log_mr_) {
+        throw std::runtime_error("Server: failed to reregister recovery log MR writable");
+    }
+    server_creds_.prototype_log = {
+        reinterpret_cast<uintptr_t>(base + recovery_log_region_offset()),
+        recovery_log_mr_->rkey,
+    };
+}
+
+void Server::reregister_recovery_regions_writable() {
+    reregister_recovery_frontiers_writable();
+    reregister_recovery_log_writable();
 }
 
 void Server::post_control_recvs() {
