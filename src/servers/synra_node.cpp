@@ -838,12 +838,10 @@ void SynraNode::run() {
 
         for (int i = 0; i < n; ++i) {
             const ibv_wc& comp = wc[i];
-            if (comp.status == IBV_WC_WR_FLUSH_ERR
-                || comp.status == IBV_WC_RETRY_EXC_ERR
-                || comp.status == IBV_WC_RNR_RETRY_EXC_ERR) {
-                continue;
-            }
             if ((comp.opcode & IBV_WC_RECV) != 0) {
+                if (comp.status == IBV_WC_WR_FLUSH_ERR && exit_deadline.has_value()) {
+                    continue;
+                }
                 RecoveryControlMessage msg{};
                 bool from_client = false;
                 uint32_t sender_id = 0;
@@ -865,12 +863,13 @@ void SynraNode::run() {
                 continue;
             }
 
+            if (comp.status == IBV_WC_WR_FLUSH_ERR && exit_deadline.has_value()) {
+                continue;
+            }
             if (comp.status != IBV_WC_SUCCESS) {
-                if constexpr (RECOVERY_VERBOSE_LOGS) {
-                    std::cerr << "[SynraNode] WC error: "
-                              << ibv_wc_status_str(comp.status)
-                              << " opcode: " << comp.opcode << "\n";
-                }
+                std::cerr << "[SynraNode] WC error: "
+                          << ibv_wc_status_str(comp.status)
+                          << " opcode: " << comp.opcode << "\n";
             }
         }
     }
