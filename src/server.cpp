@@ -287,13 +287,21 @@ bool Server::poll_control_completion(const ibv_wc& wc, RecoveryControlMessage& o
     if ((wc.opcode & IBV_WC_RECV) == 0 || !is_server_control_recv_wr_id(wc.wr_id)) {
         return false;
     }
-    if (wc.status != IBV_WC_SUCCESS) {
-        throw std::runtime_error("Server: control recv completion failed");
-    }
-
     from_client = server_control_from_client(wc.wr_id);
     const uint16_t conn_index = server_control_conn_index(wc.wr_id);
     const uint16_t slot = server_control_slot_index(wc.wr_id);
+    if (wc.status != IBV_WC_SUCCESS) {
+        throw std::runtime_error(
+            std::string("Server: control recv completion failed status=")
+            + ibv_wc_status_str(wc.status)
+            + "(" + std::to_string(wc.status) + ")"
+            + " opcode=" + std::to_string(wc.opcode)
+            + " wr_id=" + std::to_string(wc.wr_id)
+            + " from_client=" + (from_client ? std::string("true") : std::string("false"))
+            + " conn_index=" + std::to_string(conn_index)
+            + " slot=" + std::to_string(slot)
+            + " vendor_err=" + std::to_string(wc.vendor_err));
+    }
     if (slot >= RECOVERY_CTRL_RECV_RING) {
         throw std::runtime_error("Server: control recv slot out of range");
     }
