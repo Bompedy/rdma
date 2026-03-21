@@ -164,6 +164,7 @@ void SynraNode::run() {
     std::array<bool, TOTAL_CLIENTS> client_quiesced{};
     uint64_t next_read_wr_id = 1;
     std::function<void(const RecoveryControlMessage&, uint32_t)> handle_peer_control_message;
+    uint64_t recovery_active_mask = 0;
 
     auto reset_report_state = [&]() {
         recovery_report_received_.fill(false);
@@ -201,16 +202,15 @@ void SynraNode::run() {
         return true;
     };
 
-    auto all_live_replicas_reported = [&](const uint64_t live_mask) {
+    auto reported_replica_mask = [&]() {
+        uint64_t mask = 0;
         for (size_t node = 0; node < CLUSTER_NODES.size(); ++node) {
-            if (!recovery_live_mask_contains(live_mask, static_cast<uint32_t>(node))) {
-                continue;
-            }
-            if (!recovery_report_received_[node]) {
-                return false;
+            if (recovery_report_received_[node]) {
+                mask |= (1ULL << node);
             }
         }
-        return true;
+        mask &= ~(1ULL << RECOVERY_FAILED_NODE);
+        return mask;
     };
 
     auto process_control_message = [&](const RecoveryControlMessage& msg, const bool from_client, const uint32_t sender_id) {
@@ -502,6 +502,7 @@ void SynraNode::run() {
         recovery_epoch_++;
         published_new_creds = false;
         sent_recovery_done = false;
+        recovery_active_mask = 0;
         reset_report_state();
         reset_client_quiesced();
         std::cout << "[SynraNode " << node_id_ << "] Starting failover round "
@@ -554,15 +555,17 @@ void SynraNode::run() {
         if (node_id_ != RECOVERY_COORD_NODE || !recovery_triggered_ || published_new_creds) {
             return false;
         }
-        if (!all_live_replicas_reported(surviving_live_mask())) {
+        if (received_report_count(recovery_report_received_) < QUORUM) {
             return false;
         }
+
+        recovery_active_mask = reported_replica_mask();
 
         std::vector<uint64_t> cas_values;
         std::vector<uint64_t> ticket_values;
         std::vector<uint64_t> turn_values;
         for (size_t i = 0; i < CLUSTER_NODES.size(); ++i) {
-            if (!recovery_report_received_[i]) {
+            if (!recovery_live_mask_contains(recovery_active_mask, static_cast<uint32_t>(i))) {
                 continue;
             }
             cas_values.push_back(recovery_cas_frontiers_[i]);
@@ -574,7 +577,7 @@ void SynraNode::run() {
         const uint64_t recovered_ticket_frontier = quorum_median(ticket_values);
         const uint64_t recovered_turn = quorum_median(turn_values);
         install_recovered_frontiers(recovered_cas_frontier, recovered_ticket_frontier, recovered_turn);
-        repair_local_log_from_quorum(surviving_live_mask(), recovered_cas_frontier, recovered_ticket_frontier);
+        repair_local_log_from_quorum(recovery_active_mask, recovered_cas_frontier, recovered_ticket_frontier);
         reregister_recovery_log_writable();
         recovery_log_creds_[node_id_] = server_creds_.prototype_log;
         recovery_repair_received_[node_id_] = true;
@@ -587,7 +590,7 @@ void SynraNode::run() {
         creds.failed_node = RECOVERY_FAILED_NODE;
         creds.replacement_node = RECOVERY_REPLACEMENT_NODE;
         creds.frontier_host = RECOVERY_REPLACEMENT_NODE;
-        creds.live_mask = surviving_live_mask();
+        creds.live_mask = recovery_active_mask;
         creds.cas_frontier = recovered_cas_frontier;
         creds.ticket_frontier = recovered_ticket_frontier;
         creds.ticket_turn = recovered_turn;
@@ -603,7 +606,7 @@ void SynraNode::run() {
         if (node_id_ != RECOVERY_COORD_NODE || !published_new_creds || sent_recovery_done) {
             return false;
         }
-        if (!all_live_replicas_repaired(surviving_live_mask())) {
+        if (!all_live_replicas_repaired(recovery_active_mask)) {
             return false;
         }
         RecoveryControlMessage done{};
@@ -614,7 +617,7 @@ void SynraNode::run() {
         done.failed_node = RECOVERY_FAILED_NODE;
         done.replacement_node = RECOVERY_REPLACEMENT_NODE;
         done.frontier_host = RECOVERY_REPLACEMENT_NODE;
-        done.live_mask = surviving_live_mask();
+        done.live_mask = recovery_active_mask;
         done.frontier_cred = server_creds_.prototype_frontier;
         done.turn_cred = server_creds_.prototype_turn;
         done.log_creds = recovery_log_creds_;
