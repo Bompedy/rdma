@@ -26,6 +26,8 @@ struct FailoverSample {
     uint64_t total_failover_us = 0;
     uint64_t permission_switch_us = 0;
     uint64_t detection_us = 0;
+    uint64_t quiesce_us = 0;
+    uint64_t detection_delay_us = 0;
 };
 
 uint64_t* local_frontier_ptr(void* buf) {
@@ -86,7 +88,8 @@ void SynraNode::run() {
     const auto started_at = std::chrono::steady_clock::now();
     auto phase_started_at = started_at;
     auto failure_injected_at = started_at;
-    auto recovery_started_at = started_at;
+    auto recovery_notice_sent_at = started_at;
+    auto permission_switch_started_at = started_at;
     std::vector<FailoverSample> samples;
     samples.reserve(num_rounds);
 
@@ -394,19 +397,25 @@ void SynraNode::run() {
         sample.total_failover_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
             recovery_done_at - failure_injected_at).count());
         sample.permission_switch_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-            recovery_done_at - recovery_started_at).count());
+            recovery_done_at - permission_switch_started_at).count());
         sample.detection_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-            recovery_started_at - failure_injected_at).count());
+            permission_switch_started_at - failure_injected_at).count());
+        sample.quiesce_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+            permission_switch_started_at - recovery_notice_sent_at).count());
+        sample.detection_delay_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+            recovery_notice_sent_at - failure_injected_at).count());
         samples.push_back(sample);
 
         if (samples.size() == 1) {
-            std::cout << "RECOVERY_HDR: round,total_failover_us,permission_switch_us,detection_us\n";
+            std::cout << "RECOVERY_HDR: round,total_failover_us,permission_switch_us,detection_us,quiesce_us,detection_delay_us\n";
         }
         std::cout << "RECOVERY_CSV: "
                   << sample.round << ","
                   << sample.total_failover_us << ","
                   << sample.permission_switch_us << ","
-                  << sample.detection_us << "\n";
+                  << sample.detection_us << ","
+                  << sample.quiesce_us << ","
+                  << sample.detection_delay_us << "\n";
         return true;
     };
 
@@ -477,7 +486,7 @@ void SynraNode::run() {
                 break;
             case CoordinatorPhase::waiting_detection:
                 if (std::chrono::duration_cast<std::chrono::milliseconds>(now - failure_injected_at).count() >= detection_delay_ms) {
-                    recovery_started_at = now;
+                    recovery_notice_sent_at = now;
                     begin_failover_round();
                     phase = CoordinatorPhase::waiting_for_client_quiesce;
                     phase_started_at = now;
@@ -485,6 +494,7 @@ void SynraNode::run() {
                 break;
             case CoordinatorPhase::waiting_for_client_quiesce:
                 if (all_clients_quiesced()) {
+                    permission_switch_started_at = now;
                     begin_permission_switch();
                     phase = CoordinatorPhase::collecting_reports;
                     phase_started_at = std::chrono::steady_clock::now();
