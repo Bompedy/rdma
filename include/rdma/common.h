@@ -83,7 +83,7 @@ constexpr uint32_t RECOVERY_ROUND_GAP_MS = 10;
 constexpr uint32_t RECOVERY_EXPERIMENT_DONE_GRACE_MS = 10000;
 constexpr size_t RECOVERY_CTRL_RECV_RING = 32;
 constexpr size_t RECOVERY_CTRL_SEND_RING = 32;
-constexpr bool RECOVERY_VERBOSE_LOGS = true;
+constexpr bool RECOVERY_VERBOSE_LOGS = false;
 
 // ─── CAS config ───
 // Wrapped per-lock replicated log plus owner-node control word.
