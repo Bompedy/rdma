@@ -57,6 +57,7 @@ private:
     std::vector<RemoteNode> connections_;
     std::vector<RecoveryControlMessage> control_recv_buffers_;
     std::vector<RecoveryControlMessage> control_send_buffers_;
+    std::vector<uint16_t> control_send_slots_;
     RecoveryRoute recovery_route_{};
     uint32_t go_messages_ = 0;
     bool recovery_retry_pending_ = false;

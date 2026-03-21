@@ -296,18 +296,24 @@ void Server::send_control_message(rdma_cm_id* cm_id, const RecoveryControlMessag
             }
         }
     }
-    if (!found || buffer_index >= control_send_buffers_.size()) {
+    if (!found || buffer_index >= control_send_slots_.size()) {
         throw std::runtime_error("Server: control send buffer lookup failed");
     }
 
-    control_send_buffers_[buffer_index] = msg;
+    const size_t slot = control_send_slots_[buffer_index]++ % RECOVERY_CTRL_SEND_RING;
+    const size_t send_index = buffer_index * RECOVERY_CTRL_SEND_RING + slot;
+    if (send_index >= control_send_buffers_.size()) {
+        throw std::runtime_error("Server: control send ring index out of range");
+    }
+
+    control_send_buffers_[send_index] = msg;
     ibv_sge sge{};
-    sge.addr = reinterpret_cast<uintptr_t>(&control_send_buffers_[buffer_index]);
+    sge.addr = reinterpret_cast<uintptr_t>(&control_send_buffers_[send_index]);
     sge.length = sizeof(RecoveryControlMessage);
     sge.lkey = control_send_mr_->lkey;
 
     ibv_send_wr wr{}, *bad_wr = nullptr;
-    wr.wr_id = wr_id != 0 ? wr_id : (kServerControlSendBaseWrId | buffer_index);
+    wr.wr_id = wr_id != 0 ? wr_id : (kServerControlSendBaseWrId | send_index);
     wr.opcode = IBV_WR_SEND;
     wr.sg_list = &sge;
     wr.num_sge = 1;
@@ -450,7 +456,8 @@ RemoteConnection Server::connect_to_node(const std::string& ip, uint16_t port) {
                 IBV_ACCESS_LOCAL_WRITE);
             if (!control_mr_) throw std::runtime_error("ibv_reg_mr failed for server control recv buffers");
 
-            control_send_buffers_.resize(endpoint_count);
+            control_send_buffers_.resize(endpoint_count * RECOVERY_CTRL_SEND_RING);
+            control_send_slots_.assign(endpoint_count, 0);
             control_send_mr_ = ibv_reg_mr(
                 pd_,
                 control_send_buffers_.data(),
@@ -638,7 +645,8 @@ void Server::start(uint16_t port) {
                 IBV_ACCESS_LOCAL_WRITE);
             if (!control_mr_) throw std::runtime_error("ibv_reg_mr failed for server control recv buffers");
 
-            control_send_buffers_.resize(endpoint_count);
+            control_send_buffers_.resize(endpoint_count * RECOVERY_CTRL_SEND_RING);
+            control_send_slots_.assign(endpoint_count, 0);
             control_send_mr_ = ibv_reg_mr(
                 pd_,
                 control_send_buffers_.data(),

@@ -54,6 +54,7 @@ protected:
     std::vector<RemoteConnection> clients_;
     std::vector<RecoveryControlMessage> control_recv_buffers_;
     std::vector<RecoveryControlMessage> control_send_buffers_;
+    std::vector<uint16_t> control_send_slots_;
     ConnPrivateData server_creds_{};
     uint32_t recovery_epoch_ = 0;
     bool recovery_triggered_ = false;

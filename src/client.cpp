@@ -125,15 +125,17 @@ void Client::send_control_message(const size_t conn_index, const RecoveryControl
     if (conn_index >= connections_.size()) {
         throw std::runtime_error("Client::send_control_message: connection index out of range");
     }
-    control_send_buffers_[conn_index] = msg;
+    const size_t slot = control_send_slots_[conn_index]++ % RECOVERY_CTRL_SEND_RING;
+    const size_t buffer_index = conn_index * RECOVERY_CTRL_SEND_RING + slot;
+    control_send_buffers_[buffer_index] = msg;
 
     ibv_sge sge{};
-    sge.addr = reinterpret_cast<uintptr_t>(&control_send_buffers_[conn_index]);
+    sge.addr = reinterpret_cast<uintptr_t>(&control_send_buffers_[buffer_index]);
     sge.length = sizeof(RecoveryControlMessage);
     sge.lkey = control_send_mr_->lkey;
 
     ibv_send_wr wr{}, *bad_wr = nullptr;
-    wr.wr_id = 0;
+    wr.wr_id = static_cast<uint64_t>(buffer_index);
     wr.opcode = IBV_WR_SEND;
     wr.send_flags = 0;
     wr.sg_list = &sge;
@@ -360,7 +362,8 @@ void Client::connect(const std::vector<std::string>& node_ips, const uint16_t po
                 IBV_ACCESS_LOCAL_WRITE);
             if (!control_mr_) throw std::runtime_error("ibv_reg_mr failed for client control buffers");
 
-            control_send_buffers_.resize(node_ips.size());
+            control_send_buffers_.resize(node_ips.size() * RECOVERY_CTRL_SEND_RING);
+            control_send_slots_.assign(node_ips.size(), 0);
             control_send_mr_ = ibv_reg_mr(
                 pd_, control_send_buffers_.data(),
                 control_send_buffers_.size() * sizeof(RecoveryControlMessage),

@@ -82,6 +82,7 @@ constexpr uint32_t RECOVERY_RESET_QUIESCE_MS = 10;
 constexpr uint32_t RECOVERY_ROUND_GAP_MS = 10;
 constexpr uint32_t RECOVERY_EXPERIMENT_DONE_GRACE_MS = 250;
 constexpr size_t RECOVERY_CTRL_RECV_RING = 8;
+constexpr size_t RECOVERY_CTRL_SEND_RING = 32;
 
 // ─── CAS config ───
 // Wrapped per-lock replicated log plus owner-node control word.
