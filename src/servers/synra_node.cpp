@@ -1,15 +1,20 @@
 #include "rdma/servers/synra_node.h"
 
 #include <chrono>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <optional>
 #include <stdexcept>
+#include <unordered_map>
 #include <vector>
 
 namespace {
 
 constexpr uint64_t kCopyWrTag = 0xE100000000000000ULL;
+constexpr uint64_t kRecoveryReadWrTag = 0xE200000000000000ULL;
+constexpr uint64_t kLogLiveBit = 1ULL << 63;
+constexpr uint64_t kLogSeqMask = (1ULL << 31) - 1;
 
 enum class CoordinatorPhase {
     warmup,
@@ -42,16 +47,68 @@ uint8_t* local_log_ptr(void* buf) {
     return static_cast<uint8_t*>(buf) + recovery_log_region_offset();
 }
 
+uint64_t read_local_log_slot(void* buf, const uint64_t slot) {
+    return *reinterpret_cast<uint64_t*>(local_log_ptr(buf) + slot * ENTRY_SIZE);
+}
+
+void write_local_log_slot(void* buf, const uint64_t slot, const uint64_t value) {
+    *reinterpret_cast<uint64_t*>(local_log_ptr(buf) + slot * ENTRY_SIZE) = value;
+}
+
+uint64_t cas_frontier_from_log_value(const uint64_t value) {
+    if (value == EMPTY_SLOT) {
+        return 0;
+    }
+    const uint64_t seq = (value >> 32) & kLogSeqMask;
+    if ((value & kLogLiveBit) != 0) {
+        return 2 * seq + 1;
+    }
+    if (seq >= CAS_LOG_CAPACITY) {
+        return 2 * (seq - CAS_LOG_CAPACITY) + 2;
+    }
+    return 2 * seq + 2;
+}
+
+uint64_t ticket_frontier_from_log_value(const uint64_t value) {
+    if (value == EMPTY_SLOT) {
+        return 0;
+    }
+    uint64_t ticket = (value >> 32) & kLogSeqMask;
+    if ((value & kLogLiveBit) == 0 && ticket >= TICKET_FAA_LOG_CAPACITY) {
+        ticket -= TICKET_FAA_LOG_CAPACITY;
+    }
+    return ticket + 1;
+}
+
+uint64_t cas_used_physical_slots(const uint64_t frontier) {
+    if (frontier == 0) {
+        return 0;
+    }
+    return std::min<uint64_t>((frontier + 1) / 2, CAS_LOG_CAPACITY);
+}
+
+uint64_t ticket_used_physical_slots(const uint64_t frontier) {
+    return std::min<uint64_t>(frontier, TICKET_FAA_LOG_CAPACITY);
+}
+
 uint64_t scan_local_cas_frontier(void* buf) {
-    return *reinterpret_cast<uint64_t*>(static_cast<uint8_t*>(buf) + lock_control_offset(RECOVERY_TARGET_LOCK));
+    uint64_t frontier = 0;
+    for (uint64_t slot = 0; slot < CAS_LOG_CAPACITY; ++slot) {
+        frontier = std::max(frontier, cas_frontier_from_log_value(read_local_log_slot(buf, slot)));
+    }
+    return frontier;
 }
 
 uint64_t scan_local_ticket_frontier(void* buf) {
-    return *reinterpret_cast<uint64_t*>(static_cast<uint8_t*>(buf) + lock_control_offset(RECOVERY_TARGET_LOCK));
+    uint64_t frontier = 0;
+    for (uint64_t slot = 0; slot < TICKET_FAA_LOG_CAPACITY; ++slot) {
+        frontier = std::max(frontier, ticket_frontier_from_log_value(read_local_log_slot(buf, slot)));
+    }
+    return frontier;
 }
 
 uint64_t scan_local_turn(void* buf) {
-    return *reinterpret_cast<uint64_t*>(static_cast<uint8_t*>(buf) + lock_turn_offset(RECOVERY_TARGET_LOCK));
+    return scan_local_ticket_frontier(buf);
 }
 
 uint64_t surviving_live_mask() {
@@ -70,6 +127,10 @@ size_t received_report_count(const std::array<bool, MAX_REPLICAS>& received) {
 
 bool is_copy_wr_id(const uint64_t wr_id) {
     return (wr_id & 0xFFFF000000000000ULL) == kCopyWrTag;
+}
+
+bool is_recovery_read_wr_id(const uint64_t wr_id) {
+    return (wr_id & 0xFFFF000000000000ULL) == kRecoveryReadWrTag;
 }
 
 } // namespace
@@ -101,9 +162,12 @@ void SynraNode::run() {
     bool sent_recovery_done = false;
     std::optional<std::chrono::steady_clock::time_point> exit_deadline;
     std::array<bool, TOTAL_CLIENTS> client_quiesced{};
+    uint64_t next_read_wr_id = 1;
+    std::function<void(const RecoveryControlMessage&, uint32_t)> handle_peer_control_message;
 
     auto reset_report_state = [&]() {
         recovery_report_received_.fill(false);
+        recovery_repair_received_.fill(false);
         recovery_cas_frontiers_.fill(0);
         recovery_ticket_frontiers_.fill(0);
         recovery_ticket_turns_.fill(0);
@@ -123,6 +187,137 @@ void SynraNode::run() {
             }
         }
         return true;
+    };
+
+    auto all_live_replicas_repaired = [&](const uint64_t live_mask) {
+        for (size_t node = 0; node < CLUSTER_NODES.size(); ++node) {
+            if (!recovery_live_mask_contains(live_mask, static_cast<uint32_t>(node))) {
+                continue;
+            }
+            if (!recovery_repair_received_[node]) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    auto process_control_message = [&](const RecoveryControlMessage& msg, const bool from_client, const uint32_t sender_id) {
+        if (from_client) {
+            if (msg.type == RecoveryMsgType::client_quiesced
+                && sender_id < TOTAL_CLIENTS
+                && msg.epoch == recovery_epoch_) {
+                client_quiesced[sender_id] = true;
+                std::cout << "[SynraNode " << node_id_ << "] Client " << sender_id
+                          << " quiesced for epoch " << msg.epoch << "\n";
+            }
+            return;
+        }
+        handle_peer_control_message(msg, sender_id);
+    };
+
+    auto read_remote_log_slot = [&](const uint32_t node_id, const uint64_t slot) {
+        if (node_id >= peers_.size() || peers_[node_id].cm_id == nullptr) {
+            throw std::runtime_error("SynraNode: invalid peer for recovery read");
+        }
+        auto* scratch = reinterpret_cast<uint64_t*>(static_cast<uint8_t*>(buf_) + recovery_metadata_offset());
+        *scratch = EMPTY_SLOT;
+
+        ibv_sge sge{};
+        sge.addr = reinterpret_cast<uintptr_t>(scratch);
+        sge.length = sizeof(uint64_t);
+        sge.lkey = mr_->lkey;
+
+        const uint64_t wr_id = kRecoveryReadWrTag | (next_read_wr_id++ & 0x0000FFFFFFFFFFFFULL);
+        ibv_send_wr wr{}, *bad_wr = nullptr;
+        wr.wr_id = wr_id;
+        wr.opcode = IBV_WR_RDMA_READ;
+        wr.send_flags = IBV_SEND_SIGNALED;
+        wr.sg_list = &sge;
+        wr.num_sge = 1;
+        wr.wr.rdma.remote_addr = peers_[node_id].prototype_log.addr + slot * ENTRY_SIZE;
+        wr.wr.rdma.rkey = peers_[node_id].prototype_log.rkey;
+        if (ibv_post_send(peers_[node_id].cm_id->qp, &wr, &bad_wr)) {
+            throw std::runtime_error("SynraNode: failed to post recovery read");
+        }
+
+        ibv_wc wc[16];
+        while (true) {
+            const int polled = ibv_poll_cq(cq_, 16, wc);
+            if (polled < 0) {
+                throw std::runtime_error("SynraNode: poll failed while waiting for recovery read");
+            }
+            if (polled == 0) {
+                continue;
+            }
+            for (int i = 0; i < polled; ++i) {
+                const ibv_wc& comp = wc[i];
+                if ((comp.opcode & IBV_WC_RECV) != 0) {
+                    RecoveryControlMessage msg{};
+                    bool from_client = false;
+                    uint32_t sender_id = 0;
+                    if (poll_control_completion(comp, msg, from_client, sender_id)) {
+                        process_control_message(msg, from_client, sender_id);
+                    }
+                    continue;
+                }
+                if (comp.status != IBV_WC_SUCCESS) {
+                    throw std::runtime_error("SynraNode: recovery read completion failed");
+                }
+                if (is_recovery_read_wr_id(comp.wr_id) && comp.wr_id == wr_id) {
+                    return *scratch;
+                }
+            }
+        }
+    };
+
+    auto repair_local_log_from_quorum = [&](const uint64_t live_mask, const uint64_t cas_frontier, const uint64_t ticket_frontier) {
+        const uint64_t limit = std::min<uint64_t>(
+            MAX_LOG_PER_LOCK,
+            std::max(cas_used_physical_slots(cas_frontier), ticket_used_physical_slots(ticket_frontier)));
+        for (uint64_t slot = 0; slot < limit; ++slot) {
+            if (read_local_log_slot(buf_, slot) != EMPTY_SLOT) {
+                continue;
+            }
+            std::unordered_map<uint64_t, size_t> value_counts;
+            uint64_t chosen_value = EMPTY_SLOT;
+            size_t chosen_count = 0;
+            for (size_t node = 0; node < CLUSTER_NODES.size(); ++node) {
+                if (static_cast<uint32_t>(node) == RECOVERY_FAILED_NODE
+                    || !recovery_live_mask_contains(live_mask, static_cast<uint32_t>(node))) {
+                    continue;
+                }
+                const uint64_t candidate = (static_cast<uint32_t>(node) == node_id_)
+                    ? read_local_log_slot(buf_, slot)
+                    : read_remote_log_slot(static_cast<uint32_t>(node), slot);
+                if (candidate == EMPTY_SLOT) {
+                    continue;
+                }
+                const size_t count = ++value_counts[candidate];
+                if (count > chosen_count) {
+                    chosen_count = count;
+                    chosen_value = candidate;
+                }
+            }
+            if (chosen_value != EMPTY_SLOT && chosen_count >= QUORUM) {
+                write_local_log_slot(buf_, slot, chosen_value);
+            }
+        }
+    };
+
+    auto send_repaired_to_coordinator = [&]() {
+        if (node_id_ == RECOVERY_COORD_NODE) {
+            return;
+        }
+        RecoveryControlMessage repaired{};
+        repaired.type = RecoveryMsgType::replica_repaired;
+        repaired.epoch = recovery_epoch_;
+        repaired.lock_id = RECOVERY_TARGET_LOCK;
+        repaired.from_node = node_id_;
+        repaired.failed_node = RECOVERY_FAILED_NODE;
+        repaired.replacement_node = RECOVERY_REPLACEMENT_NODE;
+        repaired.frontier_host = RECOVERY_REPLACEMENT_NODE;
+        repaired.live_mask = surviving_live_mask();
+        send_control_message(peers_[RECOVERY_COORD_NODE].cm_id, repaired);
     };
 
     auto install_local_report = [&]() {
@@ -327,6 +522,14 @@ void SynraNode::run() {
         broadcast_control_message(switch_msg, false);
     };
 
+    auto install_recovered_frontiers = [&](const uint64_t cas_frontier, const uint64_t ticket_frontier, const uint64_t turn) {
+        *local_frontier_ptr(buf_) = cas_frontier;
+        *local_turn_ptr(buf_) = turn;
+        *reinterpret_cast<uint64_t*>(static_cast<uint8_t*>(buf_) + lock_control_offset(RECOVERY_TARGET_LOCK)) = cas_frontier;
+        *reinterpret_cast<uint64_t*>(static_cast<uint8_t*>(buf_) + lock_turn_offset(RECOVERY_TARGET_LOCK)) = turn;
+        (void)ticket_frontier;
+    };
+
     auto maybe_publish_failover_creds = [&]() {
         if (node_id_ != RECOVERY_COORD_NODE || !recovery_triggered_ || published_new_creds) {
             return false;
@@ -347,8 +550,12 @@ void SynraNode::run() {
             turn_values.push_back(recovery_ticket_turns_[i]);
         }
 
-        *local_frontier_ptr(buf_) = quorum_median(cas_values);
-        *local_turn_ptr(buf_) = quorum_median(turn_values);
+        const uint64_t recovered_cas_frontier = quorum_median(cas_values);
+        const uint64_t recovered_ticket_frontier = quorum_median(ticket_values);
+        const uint64_t recovered_turn = quorum_median(turn_values);
+        install_recovered_frontiers(recovered_cas_frontier, recovered_ticket_frontier, recovered_turn);
+        repair_local_log_from_quorum(surviving_live_mask(), recovered_cas_frontier, recovered_ticket_frontier);
+        recovery_repair_received_[node_id_] = true;
 
         RecoveryControlMessage creds{};
         creds.type = RecoveryMsgType::new_creds;
@@ -359,9 +566,9 @@ void SynraNode::run() {
         creds.replacement_node = RECOVERY_REPLACEMENT_NODE;
         creds.frontier_host = RECOVERY_REPLACEMENT_NODE;
         creds.live_mask = surviving_live_mask();
-        creds.cas_frontier = *local_frontier_ptr(buf_);
-        creds.ticket_frontier = quorum_median(ticket_values);
-        creds.ticket_turn = *local_turn_ptr(buf_);
+        creds.cas_frontier = recovered_cas_frontier;
+        creds.ticket_frontier = recovered_ticket_frontier;
+        creds.ticket_turn = recovered_turn;
         creds.frontier_cred = server_creds_.prototype_frontier;
         creds.turn_cred = server_creds_.prototype_turn;
         creds.log_creds = recovery_log_creds_;
@@ -372,6 +579,9 @@ void SynraNode::run() {
 
     auto finish_failover_round = [&]() {
         if (node_id_ != RECOVERY_COORD_NODE || !published_new_creds || sent_recovery_done) {
+            return false;
+        }
+        if (!all_live_replicas_repaired(surviving_live_mask())) {
             return false;
         }
         RecoveryControlMessage done{};
@@ -419,7 +629,7 @@ void SynraNode::run() {
         return true;
     };
 
-    auto handle_peer_control_message = [&](const RecoveryControlMessage& msg, const uint32_t sender_id) {
+    handle_peer_control_message = [&](const RecoveryControlMessage& msg, const uint32_t sender_id) {
         switch (msg.type) {
         case RecoveryMsgType::recovery_start:
             if (node_id_ == RECOVERY_COORD_NODE) {
@@ -449,12 +659,21 @@ void SynraNode::run() {
                 recovery_log_creds_[sender_id] = msg.log_creds[sender_id];
             }
             break;
+        case RecoveryMsgType::replica_repaired:
+            if (node_id_ == RECOVERY_COORD_NODE && sender_id < MAX_REPLICAS) {
+                recovery_repair_received_[sender_id] = true;
+            }
+            break;
         case RecoveryMsgType::baseline_reset_start:
             recovery_triggered_ = true;
             recovery_epoch_ = std::max(recovery_epoch_, msg.epoch);
             break;
         case RecoveryMsgType::new_creds:
             recovery_epoch_ = std::max(recovery_epoch_, msg.epoch);
+            install_recovered_frontiers(msg.cas_frontier, msg.ticket_frontier, msg.ticket_turn);
+            repair_local_log_from_quorum(msg.live_mask, msg.cas_frontier, msg.ticket_frontier);
+            recovery_repair_received_[node_id_] = true;
+            send_repaired_to_coordinator();
             break;
         case RecoveryMsgType::recovery_done:
             recovery_epoch_ = std::max(recovery_epoch_, msg.epoch);

@@ -326,6 +326,7 @@ enum class RecoveryMsgType : uint8_t {
     baseline_reset_start = 7,
     experiment_done = 8,
     client_quiesced = 9,
+    replica_repaired = 10,
 };
 
 struct RecoveryControlMessage {

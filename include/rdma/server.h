@@ -56,6 +56,7 @@ protected:
     uint32_t recovery_epoch_ = 0;
     bool recovery_triggered_ = false;
     std::array<bool, MAX_REPLICAS> recovery_report_received_{};
+    std::array<bool, MAX_REPLICAS> recovery_repair_received_{};
     std::array<uint64_t, MAX_REPLICAS> recovery_cas_frontiers_{};
     std::array<uint64_t, MAX_REPLICAS> recovery_ticket_frontiers_{};
     std::array<uint64_t, MAX_REPLICAS> recovery_ticket_turns_{};
