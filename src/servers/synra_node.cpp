@@ -757,7 +757,10 @@ void SynraNode::run() {
                 }
                 break;
             case CoordinatorPhase::collecting_reports:
-                if (maybe_publish_failover_creds() && finish_failover_round()) {
+                if (!published_new_creds) {
+                    maybe_publish_failover_creds();
+                }
+                if (finish_failover_round()) {
                     broadcast_reset_start();
                     phase = CoordinatorPhase::reset_waiting_for_client_quiesce;
                     phase_started_at = std::chrono::steady_clock::now();
