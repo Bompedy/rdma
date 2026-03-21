@@ -38,15 +38,18 @@ struct RegisteredCasBuffers {
 
 struct CasOpCtx {
     bool active = false;
+    bool retry_pending = false;
     uint32_t generation = 0;
     uint32_t slot = 0;
     uint32_t lock_id = 0;
     uint32_t owner_node = 0;
+    uint32_t epoch = 0;
     OpPhase phase = OpPhase::idle;
     uint64_t target_slot = 1;
     uint64_t held_slot = 0;
     uint64_t logical_seq = 0;
     uint64_t physical_log_slot = 0;
+    uint32_t active_replica_targets = 0;
     uint32_t replicate_responses = 0;
     uint32_t replicate_acks = 0;
     uint32_t release_log_responses = 0;
@@ -154,6 +157,83 @@ uint64_t* row_ptr(uint64_t* base, const uint32_t slot, const size_t replica_coun
     return base + row_offset(slot, replica_count);
 }
 
+bool use_recovery_route(const uint32_t lock_id) {
+    return is_recovery_target_lock(lock_id);
+}
+
+bool recovery_node_active(const RecoveryRoute& route, const uint32_t node_id) {
+    return recovery_live_mask_contains(route.live_mask, node_id);
+}
+
+uint32_t active_replica_targets(const Client& client, const uint32_t lock_id) {
+    if (!use_recovery_route(lock_id)) {
+        return static_cast<uint32_t>(client.connections().size());
+    }
+    const auto& route = client.recovery_route();
+    uint32_t count = 0;
+    for (const auto& conn : client.connections()) {
+        if (recovery_node_active(route, conn.node_id)) {
+            count++;
+        }
+    }
+    return count;
+}
+
+uintptr_t frontier_remote_addr(const Client& client, const CasOpCtx& op) {
+    if (use_recovery_route(op.lock_id)) {
+        return client.recovery_route().frontier.addr;
+    }
+    return client.connections()[op.owner_node].addr + lock_control_offset(op.lock_id);
+}
+
+uint32_t frontier_remote_rkey(const Client& client, const CasOpCtx& op) {
+    if (use_recovery_route(op.lock_id)) {
+        return client.recovery_route().frontier.rkey;
+    }
+    return client.connections()[op.owner_node].rkey;
+}
+
+uintptr_t log_remote_addr(const Client& client, const uint32_t lock_id, const uint32_t node_id, const uint64_t physical_slot) {
+    if (use_recovery_route(lock_id)) {
+        return client.recovery_route().log_creds[node_id].addr + physical_slot * ENTRY_SIZE;
+    }
+    return client.connections()[node_id].addr + lock_log_slot_offset(lock_id, physical_slot);
+}
+
+uint32_t log_remote_rkey(const Client& client, const uint32_t lock_id, const uint32_t node_id) {
+    if (use_recovery_route(lock_id)) {
+        return client.recovery_route().log_creds[node_id].rkey;
+    }
+    return client.connections()[node_id].rkey;
+}
+
+void mirror_frontier_value(const Client& client, const uint32_t lock_id, const uint64_t frontier_value) {
+    if (!use_recovery_route(lock_id)) {
+        return;
+    }
+    const auto& conns = client.connections();
+    const auto& route = client.recovery_route();
+    for (const auto& conn : conns) {
+        if (!recovery_node_active(route, conn.node_id) || conn.prototype_frontier.addr == 0 || conn.prototype_frontier.rkey == 0) {
+            continue;
+        }
+        ibv_sge sge{};
+        sge.addr = reinterpret_cast<uintptr_t>(&frontier_value);
+        sge.length = sizeof(uint64_t);
+        sge.lkey = client.mr()->lkey;
+
+        ibv_send_wr wr{}, *bad_wr = nullptr;
+        wr.wr_id = 0;
+        wr.opcode = IBV_WR_RDMA_WRITE;
+        wr.send_flags = IBV_SEND_INLINE;
+        wr.sg_list = &sge;
+        wr.num_sge = 1;
+        wr.wr.rdma.remote_addr = conn.prototype_frontier.addr;
+        wr.wr.rdma.rkey = conn.prototype_frontier.rkey;
+        ibv_post_send(conn.id->qp, &wr, &bad_wr);
+    }
+}
+
 // Map the shared client MR into the per-op result matrices used by wrapped CAS.
 RegisteredCasBuffers map_buffers(
     void* raw_buffer,
@@ -203,8 +283,8 @@ void post_acquire(const Client& client, CasOpCtx& op) {
     wr.num_sge = 1;
     wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
     wr.send_flags = IBV_SEND_SIGNALED;
-    wr.wr.atomic.remote_addr = conns[op.owner_node].addr + lock_control_offset(op.lock_id);
-    wr.wr.atomic.rkey = conns[op.owner_node].rkey;
+    wr.wr.atomic.remote_addr = frontier_remote_addr(client, op);
+    wr.wr.atomic.rkey = frontier_remote_rkey(client, op);
     wr.wr.atomic.compare_add = op.target_slot - 1;
     wr.wr.atomic.swap = op.target_slot;
 
@@ -228,7 +308,12 @@ void post_replicate(const Client& client, CasOpCtx& op, const RegisteredCasBuffe
     const uint64_t      compare_value = cas_log_expected_free_value(op.logical_seq);
     const uint64_t swap_value = pack_cas_log_live(op.logical_seq, static_cast<uint16_t>(client.id()), static_cast<uint16_t>(op.slot));
 
+    op.active_replica_targets = active_replica_targets(client, op.lock_id);
+
     for (size_t i = 0; i < conns.size(); ++i) {
+        if (use_recovery_route(op.lock_id) && !recovery_node_active(client.recovery_route(), conns[i].node_id)) {
+            continue;
+        }
         results[i] = EMPTY_SLOT - 1;
 
         ibv_sge sge{};
@@ -242,8 +327,8 @@ void post_replicate(const Client& client, CasOpCtx& op, const RegisteredCasBuffe
         wr.num_sge = 1;
         wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
         wr.send_flags = IBV_SEND_SIGNALED;
-        wr.wr.atomic.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.physical_log_slot);
-        wr.wr.atomic.rkey = conns[i].rkey;
+        wr.wr.atomic.remote_addr = log_remote_addr(client, op.lock_id, conns[i].node_id, op.physical_log_slot);
+        wr.wr.atomic.rkey = log_remote_rkey(client, op.lock_id, conns[i].node_id);
         wr.wr.atomic.compare_add = compare_value;
         wr.wr.atomic.swap = swap_value;
 
@@ -291,17 +376,17 @@ void post_release(
     control_wr.sg_list = &control_sge;
     control_wr.num_sge = 1;
     if (config.release_control_with_cas) {
-        control_wr.send_flags = 0;
+        control_wr.send_flags = IBV_SEND_SIGNALED;
         control_wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
-        control_wr.wr.atomic.remote_addr = owner.addr + lock_control_offset(op.lock_id);
-        control_wr.wr.atomic.rkey = owner.rkey;
+        control_wr.wr.atomic.remote_addr = frontier_remote_addr(client, op);
+        control_wr.wr.atomic.rkey = frontier_remote_rkey(client, op);
         control_wr.wr.atomic.compare_add = op.held_slot;
         control_wr.wr.atomic.swap = op.held_slot + 1;
     } else {
-        control_wr.send_flags = IBV_SEND_INLINE;
+        control_wr.send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;
         control_wr.opcode = IBV_WR_RDMA_WRITE;
-        control_wr.wr.rdma.remote_addr = owner.addr + lock_control_offset(op.lock_id);
-        control_wr.wr.rdma.rkey = owner.rkey;
+        control_wr.wr.rdma.remote_addr = frontier_remote_addr(client, op);
+        control_wr.wr.rdma.rkey = frontier_remote_rkey(client, op);
     }
 
     if (ibv_post_send(owner.id->qp, &control_wr, &bad_wr)) {
@@ -309,6 +394,9 @@ void post_release(
     }
 
     for (size_t i = 0; i < conns.size(); ++i) {
+        if (use_recovery_route(op.lock_id) && !recovery_node_active(client.recovery_route(), conns[i].node_id)) {
+            continue;
+        }
         auto* log_result = log_results + i;
         *log_result = EMPTY_SLOT - 1;
 
@@ -324,16 +412,16 @@ void post_release(
         if (config.release_log_with_cas) {
             log_wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
             log_wr.send_flags = IBV_SEND_SIGNALED;
-            log_wr.wr.atomic.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.physical_log_slot);
-            log_wr.wr.atomic.rkey = conns[i].rkey;
+            log_wr.wr.atomic.remote_addr = log_remote_addr(client, op.lock_id, conns[i].node_id, op.physical_log_slot);
+            log_wr.wr.atomic.rkey = log_remote_rkey(client, op.lock_id, conns[i].node_id);
             log_wr.wr.atomic.compare_add = live_value;
             log_wr.wr.atomic.swap = free_value;
         } else {
             *log_result = free_value;
             log_wr.opcode = IBV_WR_RDMA_WRITE;
             log_wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
-            log_wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.physical_log_slot);
-            log_wr.wr.rdma.rkey = conns[i].rkey;
+            log_wr.wr.rdma.remote_addr = log_remote_addr(client, op.lock_id, conns[i].node_id, op.physical_log_slot);
+            log_wr.wr.rdma.rkey = log_remote_rkey(client, op.lock_id, conns[i].node_id);
         }
 
         if (ibv_post_send(conns[i].id->qp, &log_wr, &bad_log)) {
@@ -386,7 +474,6 @@ void run_cas_pipeline(
     // frontier_hints caches the next likely logical slot for each lock locally.
     auto buffers = map_buffers(client.buffer(), client.buffer_size(), config.active_window, conns.size());
     std::vector<CasOpCtx> ops(config.active_window);
-    ZipfLockPicker picker(config.zipf_skew);
     std::vector<ibv_wc> completions(config.cq_batch);
     std::array<uint64_t, MAX_LOCKS> frontier_hints{};
     frontier_hints.fill(1);
@@ -395,35 +482,48 @@ void run_cas_pipeline(
     size_t completed = 0;
     size_t active = 0;
 
-    auto submit_op = [&](const size_t slot) {
-        // Start one wrapped CAS acquire:
-        // 1. choose a lock id,
-        // 2. choose the owner node,
-        // 3. seed the target logical slot from the frontier hint,
-        // 4. post the owner control-word CAS.
-        auto& op = ops[slot];
+    auto prime_op = [&](CasOpCtx& op, const size_t slot, const bool is_retry) {
         op.active = true;
+        op.retry_pending = false;
         op.generation++;
         op.slot = static_cast<uint32_t>(slot);
-        op.lock_id = picker.next();
-        op.owner_node = config.shard_owner ? (op.lock_id % conns.size()) : 0;
+        op.lock_id = RECOVERY_TARGET_LOCK;
+        op.owner_node = use_recovery_route(op.lock_id) ? client.recovery_route().frontier_host
+                                                       : (config.shard_owner ? (op.lock_id % conns.size()) : 0);
+        op.epoch = client.recovery_route().epoch;
         op.phase = OpPhase::idle;
         op.target_slot = frontier_hints[op.lock_id];
         op.held_slot = 0;
         op.logical_seq = 0;
         op.physical_log_slot = 0;
+        op.active_replica_targets = active_replica_targets(client, op.lock_id);
         op.replicate_responses = 0;
         op.replicate_acks = 0;
         op.release_log_responses = 0;
         op.release_log_acks = 0;
         op.release_owner_log_done = false;
         op.release_log_quorum = false;
-        op.latency_index = submitted;
+        if (!is_retry) {
+            op.latency_index = submitted;
+            submitted++;
+        }
         op.acquire_result = &buffers.acquire_results[slot];
         op.started_at = std::chrono::steady_clock::now();
         post_acquire(client, op);
-        submitted++;
         active++;
+    };
+
+    auto submit_op = [&](const size_t slot) {
+        // Start one wrapped CAS acquire:
+        // 1. choose a lock id,
+        // 2. choose the owner node,
+        // 3. seed the target logical slot from the frontier hint,
+        // 4. post the owner control-word CAS.
+        prime_op(ops[slot], slot, false);
+    };
+
+    auto retry_op = [&](const size_t slot) {
+        prime_op(ops[slot], slot, true);
     };
 
     // Fill the active window before the CQ loop so multiple acquires can overlap.
@@ -432,6 +532,35 @@ void run_cas_pipeline(
     }
 
     while (completed < NUM_OPS_PER_CLIENT) {
+        if (client.recovery_active()) {
+            for (auto& op : ops) {
+                if (!op.active || !use_recovery_route(op.lock_id)) continue;
+                op.active = false;
+                op.retry_pending = true;
+                op.phase = OpPhase::idle;
+                active--;
+            }
+        } else {
+            for (size_t slot = 0; slot < ops.size(); ++slot) {
+                if (ops[slot].retry_pending && !ops[slot].active) {
+                    retry_op(slot);
+                }
+            }
+        }
+
+        while (!client.recovery_active() && active < config.active_window && submitted < NUM_OPS_PER_CLIENT) {
+            bool submitted_any = false;
+            for (size_t slot = 0; slot < ops.size() && active < config.active_window && submitted < NUM_OPS_PER_CLIENT; ++slot) {
+                if (!ops[slot].active && !ops[slot].retry_pending) {
+                    submit_op(slot);
+                    submitted_any = true;
+                }
+            }
+            if (!submitted_any) {
+                break;
+            }
+        }
+
         // One completion advances exactly one op phase: owner acquire, wrapped-log
         // claim, or wrapped-log/control release.
         const int polled = ibv_poll_cq(client.cq(), static_cast<int>(completions.size()), completions.data());
@@ -444,7 +573,23 @@ void run_cas_pipeline(
 
         for (int i = 0; i < polled; ++i) {
             const ibv_wc& wc = completions[i];
+            if (client.handle_control_completion(wc)) {
+                continue;
+            }
             if (wc.status != IBV_WC_SUCCESS) {
+                const uint32_t slot = wr_slot(wc.wr_id);
+                if (slot < ops.size()) {
+                    auto& op = ops[slot];
+                    if (use_recovery_route(op.lock_id)) {
+                        if (op.active) {
+                            op.active = false;
+                            op.retry_pending = true;
+                            op.phase = OpPhase::idle;
+                            active--;
+                        }
+                        continue;
+                    }
+                }
                 throw std::runtime_error(
                     "CAS pipeline: WC error status=" + std::to_string(wc.status)
                     + " opcode=" + std::to_string(wc.opcode));
@@ -457,6 +602,13 @@ void run_cas_pipeline(
 
             auto& op = ops[slot];
             if (!op.active || op.generation != wr_generation(wc.wr_id)) {
+                continue;
+            }
+            if (use_recovery_route(op.lock_id) && op.epoch != client.recovery_route().epoch && !client.recovery_active()) {
+                op.active = false;
+                op.retry_pending = true;
+                op.phase = OpPhase::idle;
+                active--;
                 continue;
             }
 
@@ -473,6 +625,7 @@ void run_cas_pipeline(
 
                 if (result == expected) {
                     op.held_slot = op.target_slot;
+                    mirror_frontier_value(client, op.lock_id, op.held_slot);
                     post_replicate(client, op, buffers);
                 } else {
                     op.target_slot = (result % 2 != 0) ? result + 2 : result + 1;
@@ -487,6 +640,9 @@ void run_cas_pipeline(
                 // only after the wrapped replicated log slot is claimed on quorum.
                 auto* replicate_results = row_ptr(buffers.replicate_results, op.slot, conns.size());
                 const uint8_t idx = wr_conn(wc.wr_id);
+                if (use_recovery_route(op.lock_id) && !recovery_node_active(client.recovery_route(), conns[idx].node_id)) {
+                    continue;
+                }
                 op.replicate_responses++;
                 if (replicate_results[idx] == cas_log_expected_free_value(op.logical_seq)) {
                     op.replicate_acks++;
@@ -498,9 +654,12 @@ void run_cas_pipeline(
                     post_release(client, op, buffers, config);
                     continue;
                 }
-                const uint32_t remaining = static_cast<uint32_t>(conns.size()) - op.replicate_responses;
+                const uint32_t remaining = op.active_replica_targets - op.replicate_responses;
                 if (op.replicate_acks + remaining < QUORUM) {
-                    throw std::runtime_error("CAS pipeline: wrapped log replicate failed to reach quorum");
+                    op.active = false;
+                    op.retry_pending = true;
+                    op.phase = OpPhase::idle;
+                    active--;
                 }
                 continue;
             }
@@ -518,6 +677,10 @@ void run_cas_pipeline(
                 }
 
                 if (is_log_release) {
+                    if (use_recovery_route(op.lock_id)
+                        && !recovery_node_active(client.recovery_route(), conns[replica_index].node_id)) {
+                        continue;
+                    }
                     auto* log_results = row_ptr(buffers.release_log_results, op.slot, conns.size());
                     op.release_log_responses++;
                     if (!config.release_log_with_cas
@@ -535,23 +698,29 @@ void run_cas_pipeline(
                     if (op.release_log_acks >= QUORUM) {
                         op.release_log_quorum = true;
                     } else {
-                        const uint32_t remaining = static_cast<uint32_t>(conns.size()) - op.release_log_responses;
+                        const uint32_t remaining = op.active_replica_targets - op.release_log_responses;
                         if (op.release_log_acks + remaining < QUORUM) {
-                            throw std::runtime_error("CAS pipeline: wrapped log release failed to reach quorum");
+                            op.active = false;
+                            op.retry_pending = true;
+                            op.phase = OpPhase::idle;
+                            active--;
+                            continue;
                         }
                     }
                 } else {
-                    throw std::runtime_error("CAS pipeline: unexpected control release completion");
+                    continue;
                 }
 
                 if (op.release_owner_log_done && op.release_log_quorum) {
+                    mirror_frontier_value(client, op.lock_id, op.held_slot + 1);
                     lock_counts[op.lock_id]++;
                     op.active = false;
+                    op.retry_pending = false;
                     op.phase = OpPhase::idle;
                     completed++;
                     active--;
 
-                    if (submitted < NUM_OPS_PER_CLIENT) {
+                    if (!client.recovery_active() && submitted < NUM_OPS_PER_CLIENT) {
                         submit_op(slot);
                     }
                 }

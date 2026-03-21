@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -13,6 +14,30 @@
 #include <sys/mman.h>
 
 #include "rdma/mu_encoding.h"
+
+namespace {
+
+constexpr uint64_t kClientControlRecvTag = 0xC100000000000000ULL;
+
+uint64_t make_client_control_recv_wr_id(const uint16_t conn_index, const uint16_t slot) {
+    return kClientControlRecvTag
+        | (static_cast<uint64_t>(conn_index) << 16)
+        | static_cast<uint64_t>(slot);
+}
+
+bool is_client_control_recv_wr_id(const uint64_t wr_id) {
+    return (wr_id & 0xFFFF000000000000ULL) == kClientControlRecvTag;
+}
+
+uint16_t client_control_conn_index(const uint64_t wr_id) {
+    return static_cast<uint16_t>((wr_id >> 16) & 0xFFFFu);
+}
+
+uint16_t client_control_slot_index(const uint64_t wr_id) {
+    return static_cast<uint16_t>(wr_id & 0xFFFFu);
+}
+
+} // namespace
 
 // Wait for one specific CM event and fail fast if the connection state machine
 // deviates from the expected handshake step.
@@ -47,11 +72,145 @@ Client::~Client() {
         if (conn.id && conn.id->qp) rdma_destroy_qp(conn.id);
         if (conn.id) rdma_destroy_id(conn.id);
     }
+    if (control_mr_) ibv_dereg_mr(control_mr_);
     if (mr_) ibv_dereg_mr(mr_);
     if (cq_) ibv_destroy_cq(cq_);
     if (pd_) ibv_dealloc_pd(pd_);
     if (buf_) free_hugepage_buffer(buf_, buffer_size_);
     if (ec_) rdma_destroy_event_channel(ec_);
+}
+
+void Client::init_recovery_route() {
+    recovery_route_ = RecoveryRoute{};
+    recovery_route_.epoch = 0;
+    recovery_route_.frontier_host = RECOVERY_FAILED_NODE;
+    recovery_route_.recovering = false;
+    recovery_route_.live_mask = recovery_live_mask_all_nodes();
+    for (const auto& conn : connections_) {
+        if (conn.node_id >= MAX_REPLICAS) {
+            continue;
+        }
+        recovery_route_.log_creds[conn.node_id] = conn.prototype_log;
+        if (conn.node_id == RECOVERY_FAILED_NODE) {
+            recovery_route_.frontier = conn.prototype_frontier;
+            recovery_route_.turn = conn.prototype_turn;
+        }
+    }
+}
+
+void Client::post_control_recvs(const size_t conn_index) {
+    if (conn_index >= connections_.size()) {
+        throw std::runtime_error("Client::post_control_recvs: connection index out of range");
+    }
+    for (uint16_t slot = 0; slot < RECOVERY_CTRL_RECV_RING; ++slot) {
+        const size_t buffer_index = conn_index * RECOVERY_CTRL_RECV_RING + slot;
+        ibv_sge sge{};
+        sge.addr = reinterpret_cast<uintptr_t>(&control_recv_buffers_[buffer_index]);
+        sge.length = sizeof(RecoveryControlMessage);
+        sge.lkey = control_mr_->lkey;
+
+        ibv_recv_wr wr{}, *bad_wr = nullptr;
+        wr.wr_id = make_client_control_recv_wr_id(static_cast<uint16_t>(conn_index), slot);
+        wr.sg_list = &sge;
+        wr.num_sge = 1;
+
+        if (ibv_post_recv(connections_[conn_index].id->qp, &wr, &bad_wr)) {
+            throw std::runtime_error("Client: failed to post control recv");
+        }
+    }
+}
+
+void Client::apply_new_creds(const RecoveryControlMessage& msg) {
+    recovery_route_.epoch = msg.epoch;
+    recovery_route_.frontier_host = msg.frontier_host;
+    recovery_route_.frontier = msg.frontier_cred;
+    recovery_route_.turn = msg.turn_cred;
+    recovery_route_.live_mask = msg.live_mask;
+    recovery_route_.log_creds = msg.log_creds;
+}
+
+void Client::handle_control_message(const RecoveryControlMessage& msg, const uint32_t remote_node) {
+    switch (msg.type) {
+    case RecoveryMsgType::go:
+        go_messages_++;
+        break;
+    case RecoveryMsgType::recovery_start:
+    case RecoveryMsgType::baseline_reset_start:
+        if (msg.lock_id == RECOVERY_TARGET_LOCK) {
+            recovery_route_.recovering = true;
+            recovery_route_.epoch = std::max(recovery_route_.epoch, msg.epoch);
+            recovery_route_.live_mask = msg.live_mask;
+            recovery_route_.frontier_host = msg.replacement_node;
+            recovery_retry_pending_ = true;
+        }
+        break;
+    case RecoveryMsgType::new_creds:
+        if (msg.lock_id == RECOVERY_TARGET_LOCK) {
+            apply_new_creds(msg);
+        }
+        break;
+    case RecoveryMsgType::recovery_done:
+        if (msg.lock_id == RECOVERY_TARGET_LOCK) {
+            recovery_route_.epoch = std::max(recovery_route_.epoch, msg.epoch);
+            recovery_route_.recovering = false;
+            recovery_route_.frontier_host = msg.frontier_host;
+            recovery_route_.live_mask = msg.live_mask;
+            recovery_route_.log_creds = msg.log_creds;
+            if (msg.frontier_cred.addr != 0) {
+                recovery_route_.frontier = msg.frontier_cred;
+            }
+            if (msg.turn_cred.addr != 0) {
+                recovery_route_.turn = msg.turn_cred;
+            }
+        }
+        break;
+    case RecoveryMsgType::replica_report:
+    case RecoveryMsgType::invalid:
+        break;
+    }
+
+    (void)remote_node;
+}
+
+bool Client::handle_control_completion(const ibv_wc& wc) {
+    if ((wc.opcode & IBV_WC_RECV) == 0 || !is_client_control_recv_wr_id(wc.wr_id)) {
+        return false;
+    }
+    if (wc.status != IBV_WC_SUCCESS) {
+        throw std::runtime_error("Client: control recv completion failed");
+    }
+
+    const uint16_t conn_index = client_control_conn_index(wc.wr_id);
+    const uint16_t slot = client_control_slot_index(wc.wr_id);
+    if (conn_index >= connections_.size()) {
+        throw std::runtime_error("Client: control recv connection index out of range");
+    }
+    if (slot >= RECOVERY_CTRL_RECV_RING) {
+        throw std::runtime_error("Client: control recv slot out of range");
+    }
+
+    const size_t buffer_index = static_cast<size_t>(conn_index) * RECOVERY_CTRL_RECV_RING + slot;
+    const RecoveryControlMessage msg = control_recv_buffers_[buffer_index];
+
+    ibv_sge sge{};
+    sge.addr = reinterpret_cast<uintptr_t>(&control_recv_buffers_[buffer_index]);
+    sge.length = sizeof(RecoveryControlMessage);
+    sge.lkey = control_mr_->lkey;
+
+    ibv_recv_wr wr{}, *bad_wr = nullptr;
+    wr.wr_id = wc.wr_id;
+    wr.sg_list = &sge;
+    wr.num_sge = 1;
+    if (ibv_post_recv(connections_[conn_index].id->qp, &wr, &bad_wr)) {
+        throw std::runtime_error("Client: failed to repost control recv");
+    }
+
+    handle_control_message(msg, connections_[conn_index].node_id);
+    return true;
+}
+
+void Client::mark_recovery_retry_pending() {
+    recovery_retry_pending_ = true;
 }
 
 // Connect this client to the target server nodes and initialize the local MR/CQ
@@ -115,6 +274,13 @@ void Client::connect(const std::vector<std::string>& node_ips, const uint16_t po
                 pd_, buf_, buffer_size_,
                 IBV_ACCESS_LOCAL_WRITE);
             if (!mr_) throw std::runtime_error("ibv_reg_mr failed");
+
+            control_recv_buffers_.resize(node_ips.size() * RECOVERY_CTRL_RECV_RING);
+            control_mr_ = ibv_reg_mr(
+                pd_, control_recv_buffers_.data(),
+                control_recv_buffers_.size() * sizeof(RecoveryControlMessage),
+                IBV_ACCESS_LOCAL_WRITE);
+            if (!control_mr_) throw std::runtime_error("ibv_reg_mr failed for client control buffers");
         }
 
         ibv_qp_init_attr qp_attr{};
@@ -160,17 +326,15 @@ void Client::connect(const std::vector<std::string>& node_ips, const uint16_t po
 
         connections_.push_back({
             .id = cm_id,
+            .node_id = remote->node_id,
             .addr = remote->addr,
             .rkey = remote->rkey,
+            .prototype_frontier = remote->prototype_frontier,
+            .prototype_turn = remote->prototype_turn,
+            .prototype_log = remote->prototype_log,
         });
 
-        ibv_recv_wr rr{}, *bad_rr = nullptr;
-        rr.wr_id = 0xBEEF0000 | (connections_.size() - 1);
-        rr.sg_list = nullptr;
-        rr.num_sge = 0;
-        if (ibv_post_recv(cm_id->qp, &rr, &bad_rr)) {
-            throw std::runtime_error("Failed to pre-post GO recv");
-        }
+        post_control_recvs(connections_.size() - 1);
 
         rdma_ack_cm_event(ev_conn);
 
@@ -178,5 +342,6 @@ void Client::connect(const std::vector<std::string>& node_ips, const uint16_t po
     }
 
     std::cout << "[Client " << id_ << "] All " << node_ips.size() << " node connections established\n";
+    init_recovery_route();
 }
 

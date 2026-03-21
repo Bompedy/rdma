@@ -62,10 +62,12 @@ struct RegisteredTicketFaaBuffers {
 
 struct TicketFaaOpCtx {
     bool active = false;
+    bool retry_pending = false;
     uint32_t generation = 0;
     uint32_t slot = 0;
     uint32_t lock_id = 0;
     uint32_t owner_node = 0;
+    uint32_t epoch = 0;
     uint32_t req_id = 0;
     uint8_t round = 0;
     uint64_t ticket = 0;
@@ -77,6 +79,7 @@ struct TicketFaaOpCtx {
     TicketFaaPhase phase = TicketFaaPhase::idle;
     uint32_t responses = 0;
     uint32_t response_target = 0;
+    uint32_t active_replica_targets = 0;
     uint32_t quorum_hits = 0;
     uint32_t release_log_responses = 0;
     uint32_t release_log_quorum = 0;
@@ -155,6 +158,117 @@ size_t row_offset(const uint32_t slot, const size_t replica_count) {
 // Return the first element of one per-op row inside a replica matrix.
 uint64_t* row_ptr(uint64_t* base, const uint32_t slot, const size_t replica_count) {
     return base + row_offset(slot, replica_count);
+}
+
+bool use_recovery_route(const uint32_t lock_id) {
+    return is_recovery_target_lock(lock_id);
+}
+
+bool recovery_node_active(const RecoveryRoute& route, const uint32_t node_id) {
+    return recovery_live_mask_contains(route.live_mask, node_id);
+}
+
+uint32_t active_replica_targets(const Client& client, const uint32_t lock_id) {
+    if (!use_recovery_route(lock_id)) {
+        return static_cast<uint32_t>(client.connections().size());
+    }
+    uint32_t count = 0;
+    for (const auto& conn : client.connections()) {
+        if (recovery_node_active(client.recovery_route(), conn.node_id)) {
+            count++;
+        }
+    }
+    return count;
+}
+
+uintptr_t frontier_remote_addr(const Client& client, const TicketFaaOpCtx& op) {
+    if (use_recovery_route(op.lock_id)) {
+        return client.recovery_route().frontier.addr;
+    }
+    return client.connections()[op.owner_node].addr + lock_control_offset(op.lock_id);
+}
+
+uint32_t frontier_remote_rkey(const Client& client, const TicketFaaOpCtx& op) {
+    if (use_recovery_route(op.lock_id)) {
+        return client.recovery_route().frontier.rkey;
+    }
+    return client.connections()[op.owner_node].rkey;
+}
+
+uintptr_t turn_remote_addr(const Client& client, const TicketFaaOpCtx& op) {
+    if (use_recovery_route(op.lock_id)) {
+        return client.recovery_route().turn.addr;
+    }
+    return client.connections()[op.owner_node].addr + lock_turn_offset(op.lock_id);
+}
+
+uint32_t turn_remote_rkey(const Client& client, const TicketFaaOpCtx& op) {
+    if (use_recovery_route(op.lock_id)) {
+        return client.recovery_route().turn.rkey;
+    }
+    return client.connections()[op.owner_node].rkey;
+}
+
+uintptr_t log_remote_addr(const Client& client, const uint32_t lock_id, const uint32_t node_id, const uint64_t physical_slot) {
+    if (use_recovery_route(lock_id)) {
+        return client.recovery_route().log_creds[node_id].addr + physical_slot * ENTRY_SIZE;
+    }
+    return client.connections()[node_id].addr + lock_log_slot_offset(lock_id, physical_slot);
+}
+
+uint32_t log_remote_rkey(const Client& client, const uint32_t lock_id, const uint32_t node_id) {
+    if (use_recovery_route(lock_id)) {
+        return client.recovery_route().log_creds[node_id].rkey;
+    }
+    return client.connections()[node_id].rkey;
+}
+
+void mirror_frontier_value(const Client& client, const uint32_t lock_id, const uint64_t value) {
+    if (!use_recovery_route(lock_id)) {
+        return;
+    }
+    for (const auto& conn : client.connections()) {
+        if (!recovery_node_active(client.recovery_route(), conn.node_id) || conn.prototype_frontier.addr == 0 || conn.prototype_frontier.rkey == 0) {
+            continue;
+        }
+        ibv_sge sge{};
+        sge.addr = reinterpret_cast<uintptr_t>(&value);
+        sge.length = sizeof(uint64_t);
+        sge.lkey = client.mr()->lkey;
+
+        ibv_send_wr wr{}, *bad_wr = nullptr;
+        wr.opcode = IBV_WR_RDMA_WRITE;
+        wr.send_flags = IBV_SEND_INLINE;
+        wr.sg_list = &sge;
+        wr.num_sge = 1;
+        wr.wr.rdma.remote_addr = conn.prototype_frontier.addr;
+        wr.wr.rdma.rkey = conn.prototype_frontier.rkey;
+        ibv_post_send(conn.id->qp, &wr, &bad_wr);
+    }
+}
+
+void mirror_turn_value(const Client& client, const uint32_t lock_id, const uint64_t value) {
+    if (!use_recovery_route(lock_id)) {
+        return;
+    }
+    for (const auto& conn : client.connections()) {
+        if (!recovery_node_active(client.recovery_route(), conn.node_id) || conn.prototype_turn.addr == 0 || conn.prototype_turn.rkey == 0) {
+            continue;
+        }
+        ibv_sge sge{};
+        sge.addr = reinterpret_cast<uintptr_t>(&value);
+        sge.length = sizeof(uint64_t);
+        sge.lkey = client.mr()->lkey;
+
+        ibv_send_wr wr{}, *bad_wr = nullptr;
+        wr.opcode = IBV_WR_RDMA_WRITE;
+        wr.send_flags = IBV_SEND_INLINE;
+        wr.sg_list = &sge;
+        wr.num_sge = 1;
+        wr.wr.rdma.remote_addr = conn.prototype_turn.addr;
+        wr.wr.rdma.rkey = conn.prototype_turn.rkey;
+        ibv_post_send(conn.id->qp, &wr, &bad_wr);
+    }
 }
 
 // Size the detached turn-update pool so turn CAS/FAA completions do not block
@@ -267,8 +381,8 @@ void post_ticket_faa(Client& client, TicketFaaOpCtx& op, const RegisteredTicketF
     wr.send_flags = IBV_SEND_SIGNALED;
     wr.sg_list = &sge;
     wr.num_sge = 1;
-    wr.wr.atomic.remote_addr = owner.addr + lock_control_offset(op.lock_id);
-    wr.wr.atomic.rkey = owner.rkey;
+    wr.wr.atomic.remote_addr = frontier_remote_addr(client, op);
+    wr.wr.atomic.rkey = frontier_remote_rkey(client, op);
     wr.wr.atomic.compare_add = 1;
 
     if (ibv_post_send(owner.id->qp, &wr, &bad_wr)) {
@@ -296,10 +410,14 @@ void post_replicate_ticket(
     op.round++;
     op.phase = TicketFaaPhase::replicate_ticket;
     op.responses = 0;
-    op.response_target = static_cast<uint32_t>(conns.size());
+    op.active_replica_targets = active_replica_targets(client, op.lock_id);
+    op.response_target = op.active_replica_targets;
     op.quorum_hits = 0;
 
     for (size_t i = 0; i < conns.size(); ++i) {
+        if (use_recovery_route(op.lock_id) && !recovery_node_active(client.recovery_route(), conns[i].node_id)) {
+            continue;
+        }
         results[i] = EMPTY_SLOT - 1;
 
         ibv_sge sge{};
@@ -313,8 +431,8 @@ void post_replicate_ticket(
         wr.sg_list = &sge;
         wr.num_sge = 1;
         wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
-        wr.wr.atomic.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.physical_log_slot);
-        wr.wr.atomic.rkey = conns[i].rkey;
+        wr.wr.atomic.remote_addr = log_remote_addr(client, op.lock_id, conns[i].node_id, op.physical_log_slot);
+        wr.wr.atomic.rkey = log_remote_rkey(client, op.lock_id, conns[i].node_id);
         wr.wr.atomic.compare_add = compare_value;
         wr.wr.atomic.swap = swap_value;
 
@@ -349,8 +467,8 @@ void post_turn_read(Client& client, TicketFaaOpCtx& op, const RegisteredTicketFa
     wr.send_flags = IBV_SEND_SIGNALED;
     wr.sg_list = &sge;
     wr.num_sge = 1;
-    wr.wr.rdma.remote_addr = owner.addr + lock_turn_offset(op.lock_id);
-    wr.wr.rdma.rkey = owner.rkey;
+    wr.wr.rdma.remote_addr = turn_remote_addr(client, op);
+    wr.wr.rdma.rkey = turn_remote_rkey(client, op);
 
     if (ibv_post_send(owner.id->qp, &wr, &bad_wr)) {
         throw std::runtime_error("ticket_faa pipeline: turn read post failed");
@@ -419,8 +537,8 @@ void post_release_parallel(
         wr.send_flags = IBV_SEND_INLINE;
         wr.sg_list = &turn_sge;
         wr.num_sge = 1;
-        wr.wr.rdma.remote_addr = owner.addr + lock_turn_offset(op.lock_id);
-        wr.wr.rdma.rkey = owner.rkey;
+        wr.wr.rdma.remote_addr = turn_remote_addr(client, op);
+        wr.wr.rdma.rkey = turn_remote_rkey(client, op);
 
         if (ibv_post_send(owner.id->qp, &wr, &bad_wr)) {
             throw std::runtime_error("ticket_faa pipeline: release turn post failed");
@@ -440,14 +558,14 @@ void post_release_parallel(
         wr.num_sge = 1;
         if (config.release_turn_mode == kTurnReleaseCas) {
             wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
-            wr.wr.atomic.remote_addr = owner.addr + lock_turn_offset(op.lock_id);
-            wr.wr.atomic.rkey = owner.rkey;
+            wr.wr.atomic.remote_addr = turn_remote_addr(client, op);
+            wr.wr.atomic.rkey = turn_remote_rkey(client, op);
             wr.wr.atomic.compare_add = op.ticket;
             wr.wr.atomic.swap = op.ticket + 1;
         } else {
             wr.opcode = IBV_WR_ATOMIC_FETCH_AND_ADD;
-            wr.wr.atomic.remote_addr = owner.addr + lock_turn_offset(op.lock_id);
-            wr.wr.atomic.rkey = owner.rkey;
+            wr.wr.atomic.remote_addr = turn_remote_addr(client, op);
+            wr.wr.atomic.rkey = turn_remote_rkey(client, op);
             wr.wr.atomic.compare_add = 1;
         }
 
@@ -457,6 +575,9 @@ void post_release_parallel(
     }
 
     for (size_t i = 0; i < conns.size(); ++i) {
+        if (use_recovery_route(op.lock_id) && !recovery_node_active(client.recovery_route(), conns[i].node_id)) {
+            continue;
+        }
         auto* log_value = &release_log_values[i];
         auto* log_result = &release_log_results[i];
         *log_value = free_value;
@@ -474,16 +595,16 @@ void post_release_parallel(
         if (config.release_log_with_cas) {
             log_sge.addr = reinterpret_cast<uintptr_t>(log_result);
             wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
-            wr.wr.atomic.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.physical_log_slot);
-            wr.wr.atomic.rkey = conns[i].rkey;
+            wr.wr.atomic.remote_addr = log_remote_addr(client, op.lock_id, conns[i].node_id, op.physical_log_slot);
+            wr.wr.atomic.rkey = log_remote_rkey(client, op.lock_id, conns[i].node_id);
             wr.wr.atomic.compare_add = live_value;
             wr.wr.atomic.swap = free_value;
         } else {
             log_sge.addr = reinterpret_cast<uintptr_t>(log_value);
             wr.opcode = IBV_WR_RDMA_WRITE;
             wr.send_flags |= IBV_SEND_INLINE;
-            wr.wr.rdma.remote_addr = conns[i].addr + lock_log_slot_offset(op.lock_id, op.physical_log_slot);
-            wr.wr.rdma.rkey = conns[i].rkey;
+            wr.wr.rdma.remote_addr = log_remote_addr(client, op.lock_id, conns[i].node_id, op.physical_log_slot);
+            wr.wr.rdma.rkey = log_remote_rkey(client, op.lock_id, conns[i].node_id);
         }
 
         if (ibv_post_send(conns[i].id->qp, &wr, &bad_wr)) {
@@ -536,8 +657,6 @@ void run_ticket_faa_lock_pipeline(
     std::vector<TicketFaaOpCtx> ops(config.active_window);
     std::vector<DetachedTurnCtx> detached_turn_ctxs(detached_turn_ctx_capacity(config.active_window));
     std::vector<ibv_wc> completions(config.cq_batch);
-    ZipfLockPicker picker(config.zipf_skew);
-
     size_t submitted = 0;
     size_t completed = 0;
     size_t active = 0;
@@ -549,20 +668,18 @@ void run_ticket_faa_lock_pipeline(
         latencies[op.latency_index] = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - op.started_at).count();
         post_release_parallel(client, op, buffers, config, detached_turn_ctxs);
+        mirror_turn_value(client, op.lock_id, op.ticket + 1);
     };
 
-    auto submit_op = [&](const size_t slot) {
-        // Start one ticket_faa request:
-        // 1. choose a lock id,
-        // 2. choose the owner node,
-        // 3. initialize a unique waiter id,
-        // 4. fetch the next logical ticket via owner-node FAA.
-        auto& op = ops[slot];
+    auto prime_op = [&](TicketFaaOpCtx& op, const size_t slot, const bool is_retry) {
         op.active = true;
+        op.retry_pending = false;
         op.generation++;
         op.slot = static_cast<uint32_t>(slot);
-        op.lock_id = picker.next();
-        op.owner_node = config.shard_owner ? (op.lock_id % static_cast<uint32_t>(conns.size())) : 0;
+        op.lock_id = RECOVERY_TARGET_LOCK;
+        op.owner_node = use_recovery_route(op.lock_id) ? client.recovery_route().frontier_host
+                                                       : (config.shard_owner ? (op.lock_id % static_cast<uint32_t>(conns.size())) : 0);
+        op.epoch = client.recovery_route().epoch;
         op.req_id = next_req_id++;
         op.round = 0;
         op.ticket = 0;
@@ -574,15 +691,31 @@ void run_ticket_faa_lock_pipeline(
         op.phase = TicketFaaPhase::idle;
         op.responses = 0;
         op.response_target = 0;
+        op.active_replica_targets = active_replica_targets(client, op.lock_id);
         op.quorum_hits = 0;
         op.release_log_responses = 0;
         op.release_log_quorum = 0;
         op.release_owner_log_done = false;
-        op.latency_index = submitted;
+        if (!is_retry) {
+            op.latency_index = submitted;
+            submitted++;
+        }
         op.started_at = std::chrono::steady_clock::now();
         post_ticket_faa(client, op, buffers);
-        submitted++;
         active++;
+    };
+
+    auto submit_op = [&](const size_t slot) {
+        // Start one ticket_faa request:
+        // 1. choose a lock id,
+        // 2. choose the owner node,
+        // 3. initialize a unique waiter id,
+        // 4. fetch the next logical ticket via owner-node FAA.
+        prime_op(ops[slot], slot, false);
+    };
+
+    auto retry_op = [&](const size_t slot) {
+        prime_op(ops[slot], slot, true);
     };
 
     // Fill the active window so ticket fetches and later waits can overlap.
@@ -591,6 +724,33 @@ void run_ticket_faa_lock_pipeline(
     }
 
     while (completed < NUM_OPS_PER_CLIENT) {
+        if (client.recovery_active()) {
+            for (auto& op : ops) {
+                if (!op.active || !use_recovery_route(op.lock_id)) continue;
+                op.active = false;
+                op.retry_pending = true;
+                op.phase = TicketFaaPhase::idle;
+                active--;
+            }
+        } else {
+            for (size_t slot = 0; slot < ops.size(); ++slot) {
+                if (ops[slot].retry_pending && !ops[slot].active) {
+                    retry_op(slot);
+                }
+            }
+        }
+
+        while (!client.recovery_active() && active < config.active_window && submitted < NUM_OPS_PER_CLIENT) {
+            bool submitted_any = false;
+            for (size_t slot = 0; slot < ops.size() && active < config.active_window && submitted < NUM_OPS_PER_CLIENT; ++slot) {
+                if (!ops[slot].active && !ops[slot].retry_pending) {
+                    submit_op(slot);
+                    submitted_any = true;
+                }
+            }
+            if (!submitted_any) break;
+        }
+
         // Two local spin states exist:
         // - replicate_ticket_spin: wrapped log space is not reusable yet
         // - wait_turn_spin: wait locally before issuing another turn read
@@ -620,7 +780,21 @@ void run_ticket_faa_lock_pipeline(
 
         for (int i = 0; i < polled; ++i) {
             const ibv_wc& wc = completions[static_cast<size_t>(i)];
+            if (client.handle_control_completion(wc)) {
+                continue;
+            }
             if (wc.status != IBV_WC_SUCCESS) {
+                const uint32_t slot = wr_slot(wc.wr_id);
+                if (slot < ops.size() && use_recovery_route(ops[slot].lock_id)) {
+                    auto& op = ops[slot];
+                    if (op.active) {
+                        op.active = false;
+                        op.retry_pending = true;
+                        op.phase = TicketFaaPhase::idle;
+                        active--;
+                    }
+                    continue;
+                }
                 throw std::runtime_error(
                     "ticket_faa pipeline: completion failed status=" + std::to_string(wc.status)
                     + " vendor=" + std::to_string(wc.vendor_err));
@@ -646,6 +820,13 @@ void run_ticket_faa_lock_pipeline(
             if (slot >= ops.size()) continue;
             auto& op = ops[slot];
             if (!op.active || op.generation != wr_generation(wc.wr_id)) continue;
+            if (use_recovery_route(op.lock_id) && op.epoch != client.recovery_route().epoch && !client.recovery_active()) {
+                op.active = false;
+                op.retry_pending = true;
+                op.phase = TicketFaaPhase::idle;
+                active--;
+                continue;
+            }
             const TicketFaaPhase phase = wr_phase(wc.wr_id);
             if (phase != op.phase) continue;
             if (wr_round(wc.wr_id) != op.round) continue;
@@ -654,6 +835,7 @@ void run_ticket_faa_lock_pipeline(
                 // Once the ticket is fetched, the op must claim wrapped log space
                 // before it can wait for turn.
                 op.ticket = buffers.ticket_results[op.slot];
+                mirror_frontier_value(client, op.lock_id, op.ticket + 1);
                 post_replicate_ticket(client, op, buffers);
                 continue;
             }
@@ -666,6 +848,9 @@ void run_ticket_faa_lock_pipeline(
                 // locally and retry later instead of failing immediately.
                 auto* results = row_ptr(buffers.replicate_results, op.slot, conns.size());
                 const uint8_t idx = wr_conn(wc.wr_id);
+                if (use_recovery_route(op.lock_id) && !recovery_node_active(client.recovery_route(), conns[idx].node_id)) {
+                    continue;
+                }
                 if (results[idx] == ticket_faa_log_expected_free_value(op.ticket)) {
                     op.quorum_hits++;
                 }
@@ -679,8 +864,10 @@ void run_ticket_faa_lock_pipeline(
                     continue;
                 }
                 if (op.quorum_hits + remaining < QUORUM) {
-                    op.replicate_retry_spin_remaining = TICKET_FAA_REPLICATE_RETRY_SPIN;
-                    op.phase = TicketFaaPhase::replicate_ticket_spin;
+                    op.active = false;
+                    op.retry_pending = true;
+                    op.phase = TicketFaaPhase::idle;
+                    active--;
                     continue;
                 }
                 continue;
@@ -711,6 +898,9 @@ void run_ticket_faa_lock_pipeline(
                 // - advance the owner-node turn register
                 // Op reuse is gated by wrapped-log release safety.
                 const uint8_t idx = wr_conn(wc.wr_id);
+                if (use_recovery_route(op.lock_id) && !recovery_node_active(client.recovery_route(), conns[idx].node_id)) {
+                    continue;
+                }
                 auto* release_log_results = row_ptr(buffers.release_log_results, op.slot, conns.size());
                 op.release_log_responses++;
                 if (!config.release_log_with_cas
@@ -723,17 +913,23 @@ void run_ticket_faa_lock_pipeline(
                     throw std::runtime_error("ticket_faa pipeline: owner wrapped log release CAS failed");
                 }
 
-                const uint32_t remaining = static_cast<uint32_t>(conns.size()) - op.release_log_responses;
+                const uint32_t remaining = op.active_replica_targets - op.release_log_responses;
                 if (op.release_log_quorum + remaining < QUORUM) {
-                    throw std::runtime_error("ticket_faa pipeline: wrapped log release failed to reach quorum");
+                    op.active = false;
+                    op.retry_pending = true;
+                    op.phase = TicketFaaPhase::idle;
+                    active--;
+                    continue;
                 }
                 if (op.release_owner_log_done && op.release_log_quorum >= QUORUM) {
+                    mirror_turn_value(client, op.lock_id, op.ticket + 1);
                     lock_counts[op.lock_id]++;
                     op.active = false;
+                    op.retry_pending = false;
                     op.phase = TicketFaaPhase::idle;
                     completed++;
                     active--;
-                    if (submitted < NUM_OPS_PER_CLIENT) submit_op(slot);
+                    if (!client.recovery_active() && submitted < NUM_OPS_PER_CLIENT) submit_op(slot);
                 }
             }
         }

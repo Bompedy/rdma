@@ -62,17 +62,30 @@ constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 // ─── Benchmark / workload config ───
 // These knobs define the workload shape shared across all pipelines.
 
-constexpr size_t NUM_OPS = 15000000;
-constexpr size_t NUM_CLIENTS_PER_MACHINE = 8;
+constexpr size_t NUM_OPS = 500000;
+constexpr size_t NUM_CLIENTS_PER_MACHINE = 1;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_CLIENT_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
 constexpr size_t MAX_LOCKS = 1000;
 
+// Prototype recovery scope: one lock whose frontier starts on node 0 and moves
+// to node 1 after a hardcoded failure trigger.
+constexpr uint32_t RECOVERY_TARGET_LOCK = 0;
+constexpr uint32_t RECOVERY_FAILED_NODE = 0;
+constexpr uint32_t RECOVERY_COORD_NODE = 1;
+constexpr uint32_t RECOVERY_REPLACEMENT_NODE = 1;
+constexpr uint32_t RECOVERY_TRIGGER_MS = 2000;
+constexpr uint32_t RECOVERY_NUM_ROUNDS = 1;
+constexpr uint32_t RECOVERY_DETECTION_DELAY_MS = 10;
+constexpr uint32_t RECOVERY_RESET_QUIESCE_MS = 10;
+constexpr uint32_t RECOVERY_ROUND_GAP_MS = 10;
+constexpr size_t RECOVERY_CTRL_RECV_RING = 8;
+
 // ─── CAS config ───
 // Wrapped per-lock replicated log plus owner-node control word.
 
-constexpr size_t CAS_ACTIVE_WINDOW = 8;
+constexpr size_t CAS_ACTIVE_WINDOW = 1;
 constexpr size_t CAS_CQ_BATCH = 32;
 constexpr double CAS_ZIPF_SKEW = 0.5;
 constexpr bool CAS_SHARD_OWNER = true;
@@ -133,9 +146,19 @@ constexpr size_t LOCK_TABLE_SIZE = LOCK_REGION_SIZE * MAX_LOCKS;
 
 constexpr size_t METADATA_SIZE = 4096;
 constexpr size_t PAGE_SIZE = 4096;
+constexpr size_t RECOVERY_REGION_ALIGN = 64;
+constexpr size_t RECOVERY_FRONTIER_REGION_SIZE = 64;
+constexpr size_t RECOVERY_TURN_REGION_SIZE = 64;
+constexpr size_t RECOVERY_METADATA_REGION_SIZE = 64;
+constexpr size_t RECOVERY_LOG_REGION_SIZE = ((MAX_LOG_PER_LOCK * ENTRY_SIZE + RECOVERY_REGION_ALIGN - 1)
+    / RECOVERY_REGION_ALIGN) * RECOVERY_REGION_ALIGN;
+constexpr size_t RECOVERY_PROTOTYPE_SIZE = RECOVERY_FRONTIER_REGION_SIZE
+    + RECOVERY_TURN_REGION_SIZE
+    + RECOVERY_LOG_REGION_SIZE
+    + RECOVERY_METADATA_REGION_SIZE;
 
 // Server: full lock table + metadata
-constexpr size_t SERVER_POOL_SIZE = LOCK_TABLE_SIZE + METADATA_SIZE;
+constexpr size_t SERVER_POOL_SIZE = LOCK_TABLE_SIZE + METADATA_SIZE + RECOVERY_PROTOTYPE_SIZE;
 constexpr size_t SERVER_ALIGNED_SIZE = ((SERVER_POOL_SIZE + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE;
 
 // Client: just LocalState + padding (a few KB)
@@ -170,6 +193,30 @@ inline constexpr size_t mu_global_log_slot_offset(const uint64_t slot) {
     return lock_log_slot_offset(
         static_cast<uint32_t>(slot / MAX_LOG_PER_LOCK),
         slot % MAX_LOG_PER_LOCK);
+}
+
+inline constexpr size_t recovery_region_base_offset() {
+    return LOCK_TABLE_SIZE + METADATA_SIZE;
+}
+
+inline constexpr size_t recovery_frontier_control_offset() {
+    return recovery_region_base_offset();
+}
+
+inline constexpr size_t recovery_frontier_turn_offset() {
+    return recovery_frontier_control_offset() + RECOVERY_FRONTIER_REGION_SIZE;
+}
+
+inline constexpr size_t recovery_log_region_offset() {
+    return recovery_frontier_turn_offset() + RECOVERY_TURN_REGION_SIZE;
+}
+
+inline constexpr size_t recovery_metadata_offset() {
+    return recovery_log_region_offset() + RECOVERY_LOG_REGION_SIZE;
+}
+
+inline constexpr size_t recovery_log_slot_offset(const uint64_t slot) {
+    return recovery_log_region_offset() + slot * ENTRY_SIZE;
 }
 
 inline constexpr size_t align_up(const size_t value, const size_t alignment) {
@@ -229,17 +276,29 @@ constexpr uint64_t EMPTY_SLOT = 0xFFFFFFFFFFFFFFFF;
 
 enum class ConnType : uint8_t { FOLLOWER, CLIENT, LEADER };
 
+struct RecoveryRegionCred {
+    uintptr_t addr = 0;
+    uint32_t rkey = 0;
+};
+
 struct ConnPrivateData {
     uintptr_t addr;
     uint32_t rkey;
     uint32_t node_id;
     ConnType type;
+    RecoveryRegionCred prototype_frontier;
+    RecoveryRegionCred prototype_turn;
+    RecoveryRegionCred prototype_log;
 } __attribute__((packed));
 
 struct RemoteNode {
     rdma_cm_id* id;
+    uint32_t node_id;
     uintptr_t addr;
     uint32_t rkey;
+    RecoveryRegionCred prototype_frontier;
+    RecoveryRegionCred prototype_turn;
+    RecoveryRegionCred prototype_log;
 };
 
 struct RemoteConnection {
@@ -248,6 +307,47 @@ struct RemoteConnection {
     uintptr_t remote_addr;
     uint32_t rkey;
     ConnType type;
+    RecoveryRegionCred prototype_frontier;
+    RecoveryRegionCred prototype_turn;
+    RecoveryRegionCred prototype_log;
+};
+
+enum class RecoveryMsgType : uint8_t {
+    invalid = 0,
+    go = 1,
+    recovery_start = 2,
+    replica_report = 3,
+    new_creds = 4,
+    recovery_done = 5,
+    baseline_reset_start = 6,
+};
+
+struct RecoveryControlMessage {
+    RecoveryMsgType type = RecoveryMsgType::invalid;
+    uint8_t reserved0[7]{};
+    uint32_t epoch = 0;
+    uint32_t lock_id = RECOVERY_TARGET_LOCK;
+    uint32_t from_node = 0;
+    uint32_t failed_node = RECOVERY_FAILED_NODE;
+    uint32_t replacement_node = RECOVERY_REPLACEMENT_NODE;
+    uint32_t frontier_host = RECOVERY_FAILED_NODE;
+    uint64_t live_mask = 0;
+    uint64_t cas_frontier = 0;
+    uint64_t ticket_frontier = 0;
+    uint64_t ticket_turn = 0;
+    RecoveryRegionCred frontier_cred{};
+    RecoveryRegionCred turn_cred{};
+    std::array<RecoveryRegionCred, MAX_REPLICAS> log_creds{};
+};
+
+struct RecoveryRoute {
+    uint32_t epoch = 0;
+    uint32_t frontier_host = RECOVERY_FAILED_NODE;
+    bool recovering = false;
+    uint64_t live_mask = 0;
+    RecoveryRegionCred frontier{};
+    RecoveryRegionCred turn{};
+    std::array<RecoveryRegionCred, MAX_REPLICAS> log_creds{};
 };
 
 struct alignas(64) LocalState {
@@ -306,6 +406,40 @@ inline double get_double_env_or(const std::string& name, const double fallback) 
     return std::stod(val);
 }
 
+inline bool is_recovery_target_lock(const uint32_t lock_id) {
+    return lock_id == RECOVERY_TARGET_LOCK;
+}
+
+inline uint64_t recovery_live_mask_all_nodes() {
+    uint64_t mask = 0;
+    for (size_t i = 0; i < CLUSTER_NODES.size(); ++i) {
+        mask |= (1ULL << i);
+    }
+    return mask;
+}
+
+inline bool recovery_live_mask_contains(const uint64_t mask, const uint32_t node_id) {
+    return ((mask >> node_id) & 1ULL) != 0;
+}
+
+inline size_t recovery_live_node_count(const uint64_t mask) {
+    size_t count = 0;
+    for (size_t i = 0; i < CLUSTER_NODES.size(); ++i) {
+        if (recovery_live_mask_contains(mask, static_cast<uint32_t>(i))) {
+            count++;
+        }
+    }
+    return count;
+}
+
+inline uint64_t quorum_median(std::vector<uint64_t> values) {
+    if (values.empty()) {
+        throw std::runtime_error("quorum_median: empty input");
+    }
+    std::sort(values.begin(), values.end());
+    return values[values.size() / 2];
+}
+
 inline void* allocate_server_buffer(size_t num_locks = MAX_LOCKS) {
     void* ptr = allocate_hugepage_buffer(SERVER_ALIGNED_SIZE);
     if (!ptr) throw std::runtime_error("Could not allocate server RDMA buffer");
@@ -316,6 +450,13 @@ inline void* allocate_server_buffer(size_t num_locks = MAX_LOCKS) {
     for (size_t l = 0; l < num_locks; ++l) {
         *reinterpret_cast<uint64_t*>(base + lock_control_offset(l)) = 0;
         *reinterpret_cast<uint64_t*>(base + lock_turn_offset(l)) = 0;
+    }
+
+    *reinterpret_cast<uint64_t*>(base + recovery_frontier_control_offset()) = 0;
+    *reinterpret_cast<uint64_t*>(base + recovery_frontier_turn_offset()) = 0;
+    *reinterpret_cast<uint64_t*>(base + recovery_metadata_offset()) = 0;
+    for (size_t slot = 0; slot < MAX_LOG_PER_LOCK; ++slot) {
+        *reinterpret_cast<uint64_t*>(base + recovery_log_slot_offset(slot)) = EMPTY_SLOT;
     }
 
     return ptr;

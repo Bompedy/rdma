@@ -10,6 +10,37 @@
 #include <thread>
 #include <chrono>
 
+namespace {
+
+constexpr uint64_t kServerPeerControlRecvTag = 0xD100000000000000ULL;
+constexpr uint64_t kServerClientControlRecvTag = 0xD200000000000000ULL;
+constexpr uint64_t kServerControlSendBaseWrId = 0xD300000000000000ULL;
+
+uint64_t make_server_control_recv_wr_id(const bool from_client, const uint16_t conn_index, const uint16_t slot) {
+    return (from_client ? kServerClientControlRecvTag : kServerPeerControlRecvTag)
+        | (static_cast<uint64_t>(conn_index) << 16)
+        | static_cast<uint64_t>(slot);
+}
+
+bool is_server_control_recv_wr_id(const uint64_t wr_id) {
+    return (wr_id & 0xFFFF000000000000ULL) == kServerPeerControlRecvTag
+        || (wr_id & 0xFFFF000000000000ULL) == kServerClientControlRecvTag;
+}
+
+bool server_control_from_client(const uint64_t wr_id) {
+    return (wr_id & 0xFFFF000000000000ULL) == kServerClientControlRecvTag;
+}
+
+uint16_t server_control_conn_index(const uint64_t wr_id) {
+    return static_cast<uint16_t>((wr_id >> 16) & 0xFFFFu);
+}
+
+uint16_t server_control_slot_index(const uint64_t wr_id) {
+    return static_cast<uint16_t>(wr_id & 0xFFFFu);
+}
+
+} // namespace
+
 static rdma_cm_event* wait_for_event(
     rdma_event_channel* ec,
     const rdma_cm_event_type expected,
@@ -50,12 +81,260 @@ Server::~Server() {
         if (p.cm_id && p.cm_id->qp) rdma_destroy_qp(p.cm_id);
         if (p.cm_id) rdma_destroy_id(p.cm_id);
     }
+    if (recovery_log_mr_) ibv_dereg_mr(recovery_log_mr_);
+    if (recovery_turn_mr_) ibv_dereg_mr(recovery_turn_mr_);
+    if (recovery_frontier_mr_) ibv_dereg_mr(recovery_frontier_mr_);
+    if (control_send_mr_) ibv_dereg_mr(control_send_mr_);
+    if (control_mr_) ibv_dereg_mr(control_mr_);
     if (mr_)       ibv_dereg_mr(mr_);
     if (cq_)       ibv_destroy_cq(cq_);
     if (pd_)       ibv_dealloc_pd(pd_);
     if (buf_)      free_hugepage_buffer(buf_, SERVER_ALIGNED_SIZE);
     if (listener_) rdma_destroy_id(listener_);
     if (ec_)       rdma_destroy_event_channel(ec_);
+}
+
+void Server::init_recovery_regions() {
+    auto* base = static_cast<uint8_t*>(buf_);
+    *reinterpret_cast<uint64_t*>(base + recovery_frontier_control_offset()) = 0;
+    *reinterpret_cast<uint64_t*>(base + recovery_frontier_turn_offset()) = 0;
+    *reinterpret_cast<uint64_t*>(base + recovery_metadata_offset()) = 0;
+    for (size_t slot = 0; slot < MAX_LOG_PER_LOCK; ++slot) {
+        *reinterpret_cast<uint64_t*>(base + recovery_log_slot_offset(slot)) = EMPTY_SLOT;
+    }
+}
+
+void Server::register_recovery_regions() {
+    auto* base = static_cast<uint8_t*>(buf_);
+    recovery_frontier_mr_ = ibv_reg_mr(
+        pd_,
+        base + recovery_frontier_control_offset(),
+        RECOVERY_FRONTIER_REGION_SIZE,
+        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
+    if (!recovery_frontier_mr_) {
+        throw std::runtime_error("Server: failed to register recovery frontier MR");
+    }
+
+    recovery_turn_mr_ = ibv_reg_mr(
+        pd_,
+        base + recovery_frontier_turn_offset(),
+        RECOVERY_TURN_REGION_SIZE,
+        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
+    if (!recovery_turn_mr_) {
+        throw std::runtime_error("Server: failed to register recovery turn MR");
+    }
+
+    recovery_log_mr_ = ibv_reg_mr(
+        pd_,
+        base + recovery_log_region_offset(),
+        RECOVERY_LOG_REGION_SIZE,
+        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC);
+    if (!recovery_log_mr_) {
+        throw std::runtime_error("Server: failed to register recovery log MR");
+    }
+
+    server_creds_.prototype_frontier = {
+        reinterpret_cast<uintptr_t>(base + recovery_frontier_control_offset()),
+        recovery_frontier_mr_->rkey,
+    };
+    server_creds_.prototype_turn = {
+        reinterpret_cast<uintptr_t>(base + recovery_frontier_turn_offset()),
+        recovery_turn_mr_->rkey,
+    };
+    server_creds_.prototype_log = {
+        reinterpret_cast<uintptr_t>(base + recovery_log_region_offset()),
+        recovery_log_mr_->rkey,
+    };
+}
+
+void Server::reregister_recovery_log_readonly() {
+    auto* base = static_cast<uint8_t*>(buf_);
+    if (recovery_log_mr_) {
+        ibv_dereg_mr(recovery_log_mr_);
+        recovery_log_mr_ = nullptr;
+    }
+    recovery_log_mr_ = ibv_reg_mr(
+        pd_,
+        base + recovery_log_region_offset(),
+        RECOVERY_LOG_REGION_SIZE,
+        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ);
+    if (!recovery_log_mr_) {
+        throw std::runtime_error("Server: failed to reregister recovery log MR readonly");
+    }
+    server_creds_.prototype_log.rkey = recovery_log_mr_->rkey;
+}
+
+void Server::reregister_recovery_regions_writable() {
+    auto* base = static_cast<uint8_t*>(buf_);
+    if (recovery_frontier_mr_) {
+        ibv_dereg_mr(recovery_frontier_mr_);
+        recovery_frontier_mr_ = nullptr;
+    }
+    if (recovery_turn_mr_) {
+        ibv_dereg_mr(recovery_turn_mr_);
+        recovery_turn_mr_ = nullptr;
+    }
+    if (recovery_log_mr_) {
+        ibv_dereg_mr(recovery_log_mr_);
+        recovery_log_mr_ = nullptr;
+    }
+    register_recovery_regions();
+}
+
+void Server::post_control_recvs() {
+    const size_t peer_region_size = peers_.size() * RECOVERY_CTRL_RECV_RING;
+    for (uint16_t peer_idx = 0; peer_idx < peers_.size(); ++peer_idx) {
+        if (peers_[peer_idx].cm_id == nullptr) continue;
+        for (uint16_t slot = 0; slot < RECOVERY_CTRL_RECV_RING; ++slot) {
+            const size_t buffer_index = static_cast<size_t>(peer_idx) * RECOVERY_CTRL_RECV_RING + slot;
+            ibv_sge sge{};
+            sge.addr = reinterpret_cast<uintptr_t>(&control_recv_buffers_[buffer_index]);
+            sge.length = sizeof(RecoveryControlMessage);
+            sge.lkey = control_mr_->lkey;
+
+            ibv_recv_wr wr{}, *bad_wr = nullptr;
+            wr.wr_id = make_server_control_recv_wr_id(false, peer_idx, slot);
+            wr.sg_list = &sge;
+            wr.num_sge = 1;
+
+            if (ibv_post_recv(peers_[peer_idx].cm_id->qp, &wr, &bad_wr)) {
+                throw std::runtime_error("Server: failed to post peer control recv");
+            }
+        }
+    }
+
+    for (uint16_t client_idx = 0; client_idx < clients_.size(); ++client_idx) {
+        if (clients_[client_idx].cm_id == nullptr) continue;
+        for (uint16_t slot = 0; slot < RECOVERY_CTRL_RECV_RING; ++slot) {
+            const size_t buffer_index = peer_region_size
+                + static_cast<size_t>(client_idx) * RECOVERY_CTRL_RECV_RING + slot;
+            ibv_sge sge{};
+            sge.addr = reinterpret_cast<uintptr_t>(&control_recv_buffers_[buffer_index]);
+            sge.length = sizeof(RecoveryControlMessage);
+            sge.lkey = control_mr_->lkey;
+
+            ibv_recv_wr wr{}, *bad_wr = nullptr;
+            wr.wr_id = make_server_control_recv_wr_id(true, client_idx, slot);
+            wr.sg_list = &sge;
+            wr.num_sge = 1;
+
+            if (ibv_post_recv(clients_[client_idx].cm_id->qp, &wr, &bad_wr)) {
+                throw std::runtime_error("Server: failed to post client control recv");
+            }
+        }
+    }
+}
+
+void Server::send_control_message(rdma_cm_id* cm_id, const RecoveryControlMessage& msg, const uint64_t wr_id) {
+    if (cm_id == nullptr || cm_id->qp == nullptr) {
+        return;
+    }
+
+    const size_t peer_slots = peers_.size();
+    size_t buffer_index = 0;
+    bool found = false;
+    for (size_t i = 0; i < peer_slots; ++i) {
+        if (peers_[i].cm_id == cm_id) {
+            buffer_index = i;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        for (size_t i = 0; i < clients_.size(); ++i) {
+            if (clients_[i].cm_id == cm_id) {
+                buffer_index = peer_slots + i;
+                found = true;
+                break;
+            }
+        }
+    }
+    if (!found || buffer_index >= control_send_buffers_.size()) {
+        throw std::runtime_error("Server: control send buffer lookup failed");
+    }
+
+    control_send_buffers_[buffer_index] = msg;
+    ibv_sge sge{};
+    sge.addr = reinterpret_cast<uintptr_t>(&control_send_buffers_[buffer_index]);
+    sge.length = sizeof(RecoveryControlMessage);
+    sge.lkey = control_send_mr_->lkey;
+
+    ibv_send_wr wr{}, *bad_wr = nullptr;
+    wr.wr_id = wr_id != 0 ? wr_id : (kServerControlSendBaseWrId | buffer_index);
+    wr.opcode = IBV_WR_SEND;
+    wr.sg_list = &sge;
+    wr.num_sge = 1;
+    wr.send_flags = IBV_SEND_SIGNALED;
+
+    if (ibv_post_send(cm_id->qp, &wr, &bad_wr)) {
+        throw std::runtime_error("Server: failed to send control message");
+    }
+}
+
+void Server::broadcast_control_message(const RecoveryControlMessage& msg, const bool include_failed_peer) {
+    for (const auto& peer : peers_) {
+        if (peer.cm_id == nullptr || peer.id == node_id_) continue;
+        if (!include_failed_peer && peer.id == RECOVERY_FAILED_NODE && peer.id != RECOVERY_COORD_NODE) continue;
+        send_control_message(peer.cm_id, msg);
+    }
+    for (const auto& client : clients_) {
+        if (client.cm_id == nullptr) continue;
+        send_control_message(client.cm_id, msg);
+    }
+}
+
+bool Server::poll_control_completion(const ibv_wc& wc, RecoveryControlMessage& out_msg, bool& from_client, uint32_t& sender_id) {
+    if ((wc.opcode & IBV_WC_RECV) == 0 || !is_server_control_recv_wr_id(wc.wr_id)) {
+        return false;
+    }
+    if (wc.status != IBV_WC_SUCCESS) {
+        throw std::runtime_error("Server: control recv completion failed");
+    }
+
+    from_client = server_control_from_client(wc.wr_id);
+    const uint16_t conn_index = server_control_conn_index(wc.wr_id);
+    const uint16_t slot = server_control_slot_index(wc.wr_id);
+    if (slot >= RECOVERY_CTRL_RECV_RING) {
+        throw std::runtime_error("Server: control recv slot out of range");
+    }
+
+    const size_t peer_region_size = peers_.size() * RECOVERY_CTRL_RECV_RING;
+    const size_t buffer_index = from_client
+        ? peer_region_size + static_cast<size_t>(conn_index) * RECOVERY_CTRL_RECV_RING + slot
+        : static_cast<size_t>(conn_index) * RECOVERY_CTRL_RECV_RING + slot;
+    if (buffer_index >= control_recv_buffers_.size()) {
+        throw std::runtime_error("Server: control recv buffer index out of range");
+    }
+    out_msg = control_recv_buffers_[buffer_index];
+    sender_id = out_msg.from_node;
+
+    ibv_sge sge{};
+    sge.addr = reinterpret_cast<uintptr_t>(&control_recv_buffers_[buffer_index]);
+    sge.length = sizeof(RecoveryControlMessage);
+    sge.lkey = control_mr_->lkey;
+
+    ibv_recv_wr wr{}, *bad_wr = nullptr;
+    wr.wr_id = wc.wr_id;
+    wr.sg_list = &sge;
+    wr.num_sge = 1;
+
+    rdma_cm_id* cm_id = nullptr;
+    if (from_client) {
+        if (conn_index >= clients_.size()) {
+            throw std::runtime_error("Server: client control recv connection index out of range");
+        }
+        cm_id = clients_[conn_index].cm_id;
+    } else {
+        if (conn_index >= peers_.size()) {
+            throw std::runtime_error("Server: peer control recv connection index out of range");
+        }
+        cm_id = peers_[conn_index].cm_id;
+    }
+
+    if (cm_id != nullptr && ibv_post_recv(cm_id->qp, &wr, &bad_wr)) {
+        throw std::runtime_error("Server: failed to repost control recv");
+    }
+    return true;
 }
 
 // ─── Active connect to a peer node ───
@@ -107,6 +386,26 @@ RemoteConnection Server::connect_to_node(const std::string& ip, uint16_t port) {
                              IBV_ACCESS_REMOTE_ATOMIC);
             if (!mr_) throw std::runtime_error("ibv_reg_mr failed");
 
+            const size_t endpoint_count = TOTAL_CLIENTS + CLUSTER_NODES.size();
+            control_recv_buffers_.resize(endpoint_count * RECOVERY_CTRL_RECV_RING);
+            control_mr_ = ibv_reg_mr(
+                pd_,
+                control_recv_buffers_.data(),
+                control_recv_buffers_.size() * sizeof(RecoveryControlMessage),
+                IBV_ACCESS_LOCAL_WRITE);
+            if (!control_mr_) throw std::runtime_error("ibv_reg_mr failed for server control recv buffers");
+
+            control_send_buffers_.resize(endpoint_count);
+            control_send_mr_ = ibv_reg_mr(
+                pd_,
+                control_send_buffers_.data(),
+                control_send_buffers_.size() * sizeof(RecoveryControlMessage),
+                IBV_ACCESS_LOCAL_WRITE);
+            if (!control_send_mr_) throw std::runtime_error("ibv_reg_mr failed for server control send buffers");
+
+            init_recovery_regions();
+            register_recovery_regions();
+
             server_creds_.addr = reinterpret_cast<uintptr_t>(buf_);
             server_creds_.rkey = mr_->rkey;
         }
@@ -144,7 +443,16 @@ RemoteConnection Server::connect_to_node(const std::string& ip, uint16_t port) {
             ev->param.conn.private_data_len >= sizeof(ConnPrivateData)) {
             auto* remote = static_cast<const ConnPrivateData*>(
                 ev->param.conn.private_data);
-            conn = {remote->node_id, cm_id, remote->addr, remote->rkey, remote->type};
+            conn = {
+                remote->node_id,
+                cm_id,
+                remote->addr,
+                remote->rkey,
+                remote->type,
+                remote->prototype_frontier,
+                remote->prototype_turn,
+                remote->prototype_log,
+            };
         }
         rdma_ack_cm_event(ev);
         rdma_destroy_event_channel(outbound_ec);
@@ -260,6 +568,26 @@ void Server::start(uint16_t port) {
                              IBV_ACCESS_REMOTE_ATOMIC);
             if (!mr_) throw std::runtime_error("ibv_reg_mr failed");
 
+            const size_t endpoint_count = TOTAL_CLIENTS + num_nodes;
+            control_recv_buffers_.resize(endpoint_count * RECOVERY_CTRL_RECV_RING);
+            control_mr_ = ibv_reg_mr(
+                pd_,
+                control_recv_buffers_.data(),
+                control_recv_buffers_.size() * sizeof(RecoveryControlMessage),
+                IBV_ACCESS_LOCAL_WRITE);
+            if (!control_mr_) throw std::runtime_error("ibv_reg_mr failed for server control recv buffers");
+
+            control_send_buffers_.resize(endpoint_count);
+            control_send_mr_ = ibv_reg_mr(
+                pd_,
+                control_send_buffers_.data(),
+                control_send_buffers_.size() * sizeof(RecoveryControlMessage),
+                IBV_ACCESS_LOCAL_WRITE);
+            if (!control_send_mr_) throw std::runtime_error("ibv_reg_mr failed for server control send buffers");
+
+            init_recovery_regions();
+            register_recovery_regions();
+
             server_creds_.addr = reinterpret_cast<uintptr_t>(buf_);
             server_creds_.rkey = mr_->rkey;
         }
@@ -297,11 +625,29 @@ void Server::start(uint16_t port) {
         const uint32_t nid = incoming->node_id;
 
         if (incoming->type == ConnType::FOLLOWER) {
-            peers_[nid] = {nid, new_id, incoming->addr, incoming->rkey, incoming->type};
+            peers_[nid] = {
+                nid,
+                new_id,
+                incoming->addr,
+                incoming->rkey,
+                incoming->type,
+                incoming->prototype_frontier,
+                incoming->prototype_turn,
+                incoming->prototype_log,
+            };
             higher_connected++;
             std::cout << "[Server " << node_id_ << "] Peer " << nid << " accepted\n";
         } else if (incoming->type == ConnType::CLIENT) {
-            clients_[nid] = {nid, new_id, incoming->addr, incoming->rkey, incoming->type};
+            clients_[nid] = {
+                nid,
+                new_id,
+                incoming->addr,
+                incoming->rkey,
+                incoming->type,
+                incoming->prototype_frontier,
+                incoming->prototype_turn,
+                incoming->prototype_log,
+            };
             clients_connected++;
             std::cout << "[Server " << node_id_ << "] Client "
                       << clients_connected << "/" << num_clients << "\n";
@@ -312,11 +658,15 @@ void Server::start(uint16_t port) {
 
     // Mark self in peers
     peers_[node_id_].id = node_id_;
+    peers_[node_id_].prototype_frontier = server_creds_.prototype_frontier;
+    peers_[node_id_].prototype_turn = server_creds_.prototype_turn;
+    peers_[node_id_].prototype_log = server_creds_.prototype_log;
 
     std::cout << "[Server " << node_id_ << "] Ready — "
               << (num_nodes - 1) << " peers + "
               << clients_connected << " clients\n";
 
+    post_control_recvs();
     signal_clients_ready();
     run();
 }
@@ -327,22 +677,20 @@ void Server::signal_clients_ready() {
 
     std::this_thread::sleep_for(std::chrono::milliseconds(2000));
 
-    // Post all GO sends at once (don't wait one-by-one)
-    for (uint32_t i = 0; i < num_clients; ++i) {
-        ibv_send_wr swr{}, *bad_wr = nullptr;
-        swr.wr_id = 0xBEEF0000 | i;
-        swr.opcode = IBV_WR_SEND_WITH_IMM;
-        swr.num_sge = 0;
-        swr.sg_list = nullptr;
-        swr.send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;
-        swr.imm_data = htonl(0x60606060);
+    RecoveryControlMessage go_msg{};
+    go_msg.type = RecoveryMsgType::go;
+    go_msg.epoch = recovery_epoch_;
+    go_msg.lock_id = RECOVERY_TARGET_LOCK;
+    go_msg.from_node = node_id_;
+    go_msg.failed_node = RECOVERY_FAILED_NODE;
+    go_msg.replacement_node = RECOVERY_REPLACEMENT_NODE;
+    go_msg.frontier_host = RECOVERY_FAILED_NODE;
+    go_msg.live_mask = recovery_live_mask_all_nodes();
 
-        if (ibv_post_send(clients_[i].cm_id->qp, &swr, &bad_wr)) {
-            throw std::runtime_error("Failed to send GO signal to client " + std::to_string(i));
-        }
+    for (uint32_t i = 0; i < num_clients; ++i) {
+        send_control_message(clients_[i].cm_id, go_msg, kServerControlSendBaseWrId | i);
     }
 
-    // Wait for all completions
     uint32_t done = 0;
     while (done < num_clients) {
         ibv_wc wc{};
@@ -352,6 +700,14 @@ void Server::signal_clients_ready() {
                 throw std::runtime_error(
                     "GO signal failed for wr_id " + std::to_string(wc.wr_id)
                     + " status " + std::to_string(wc.status));
+            }
+            if ((wc.opcode & IBV_WC_RECV) != 0) {
+                RecoveryControlMessage msg{};
+                bool from_client = false;
+                uint32_t sender_id = 0;
+                if (poll_control_completion(wc, msg, from_client, sender_id)) {
+                    continue;
+                }
             }
             done++;
         }

@@ -83,13 +83,20 @@ int main() {
                                 const size_t num_go = is_mu ? 1 : CLUSTER_NODES.size();
                                 auto* cq = client->cq();
 
-                                size_t got = 0;
-                                while (got < num_go) {
+                                while (client->go_messages() < num_go) {
                                     ibv_wc wc{};
                                     int n = ibv_poll_cq(cq, 1, &wc);
-                                    if (n > 0 && wc.status == IBV_WC_SUCCESS
-                                        && (wc.opcode & IBV_WC_RECV)) {
-                                        got++;
+                                    if (n <= 0) {
+                                        continue;
+                                    }
+                                    if (is_mu) {
+                                        if (wc.status == IBV_WC_SUCCESS && (wc.opcode & IBV_WC_RECV)) {
+                                            break;
+                                        }
+                                        continue;
+                                    }
+                                    if (!client->handle_control_completion(wc) && wc.status != IBV_WC_SUCCESS) {
+                                        throw std::runtime_error("Client startup control completion failed");
                                     }
                                 }
                             }
