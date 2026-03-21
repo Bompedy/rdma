@@ -77,13 +77,13 @@ constexpr uint32_t RECOVERY_COORD_NODE = 1;
 constexpr uint32_t RECOVERY_REPLACEMENT_NODE = 1;
 constexpr uint32_t RECOVERY_TRIGGER_MS = 2000;
 constexpr uint32_t RECOVERY_NUM_ROUNDS = 1000;
-constexpr uint32_t RECOVERY_DETECTION_DELAY_MS = 1;
+constexpr uint32_t RECOVERY_DETECTION_DELAY_MS = 0;
 constexpr uint32_t RECOVERY_RESET_QUIESCE_MS = 10;
 constexpr uint32_t RECOVERY_ROUND_GAP_MS = 10;
 constexpr uint32_t RECOVERY_EXPERIMENT_DONE_GRACE_MS = 10000;
 constexpr size_t RECOVERY_CTRL_RECV_RING = 32;
 constexpr size_t RECOVERY_CTRL_SEND_RING = 32;
-constexpr bool RECOVERY_VERBOSE_LOGS = false;
+constexpr bool RECOVERY_VERBOSE_LOGS = true;
 
 // ─── CAS config ───
 // Wrapped per-lock replicated log plus owner-node control word.
