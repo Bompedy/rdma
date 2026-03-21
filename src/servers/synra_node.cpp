@@ -822,12 +822,8 @@ void SynraNode::run() {
             }
         }
 
-        if (exit_deadline.has_value()) {
-            if (std::chrono::steady_clock::now() >= *exit_deadline) {
-                return;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            continue;
+        if (exit_deadline.has_value() && std::chrono::steady_clock::now() >= *exit_deadline) {
+            return;
         }
 
         const int n = ibv_poll_cq(cq_, 64, wc);
