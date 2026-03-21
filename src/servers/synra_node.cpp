@@ -142,9 +142,16 @@ void SynraNode::run() {
     constexpr uint32_t reset_quiesce_ms = RECOVERY_RESET_QUIESCE_MS;
     constexpr uint32_t round_gap_ms = RECOVERY_ROUND_GAP_MS;
 
-    std::cout << "[SynraNode " << node_id_ << "] Recovery prototype active for lock "
-              << RECOVERY_TARGET_LOCK << " rounds=" << num_rounds
-              << " detection_delay_ms=" << detection_delay_ms << "\n";
+    auto verbose_log = [&](const std::string& msg) {
+        if constexpr (RECOVERY_VERBOSE_LOGS) {
+            std::cout << msg << "\n";
+        }
+    };
+
+    verbose_log(
+        "[SynraNode " + std::to_string(node_id_) + "] Recovery prototype active for lock "
+        + std::to_string(RECOVERY_TARGET_LOCK) + " rounds=" + std::to_string(num_rounds)
+        + " detection_delay_ms=" + std::to_string(detection_delay_ms));
 
     const auto started_at = std::chrono::steady_clock::now();
     auto phase_started_at = started_at;
@@ -219,8 +226,9 @@ void SynraNode::run() {
                 && sender_id < TOTAL_CLIENTS
                 && msg.epoch == recovery_epoch_) {
                 client_quiesced[sender_id] = true;
-                std::cout << "[SynraNode " << node_id_ << "] Client " << sender_id
-                          << " quiesced for epoch " << msg.epoch << "\n";
+                verbose_log(
+                    "[SynraNode " + std::to_string(node_id_) + "] Client "
+                    + std::to_string(sender_id) + " quiesced for epoch " + std::to_string(msg.epoch));
             }
             return;
         }
@@ -337,8 +345,9 @@ void SynraNode::run() {
         repaired.frontier_host = RECOVERY_REPLACEMENT_NODE;
         repaired.live_mask = surviving_live_mask();
         repaired.log_creds[node_id_] = server_creds_.prototype_log;
-        std::cout << "[SynraNode " << node_id_ << "] Sending replica_repaired epoch="
-                  << repaired.epoch << "\n";
+        verbose_log(
+            "[SynraNode " + std::to_string(node_id_) + "] Sending replica_repaired epoch="
+            + std::to_string(repaired.epoch));
         send_control_message(peers_[RECOVERY_COORD_NODE].cm_id, repaired);
     };
 
@@ -390,8 +399,9 @@ void SynraNode::run() {
         recovery_triggered_ = true;
         recovery_epoch_++;
         reset_client_quiesced();
-        std::cout << "[SynraNode " << node_id_ << "] Starting baseline reset epoch="
-                  << recovery_epoch_ << "\n";
+        verbose_log(
+            "[SynraNode " + std::to_string(node_id_) + "] Starting baseline reset epoch="
+            + std::to_string(recovery_epoch_));
         RecoveryControlMessage reset{};
         reset.type = RecoveryMsgType::baseline_reset_start;
         reset.epoch = recovery_epoch_;
@@ -507,8 +517,9 @@ void SynraNode::run() {
         recovery_active_mask = 0;
         reset_report_state();
         reset_client_quiesced();
-        std::cout << "[SynraNode " << node_id_ << "] Starting failover round "
-                  << (current_round + 1) << " epoch=" << recovery_epoch_ << "\n";
+        verbose_log(
+            "[SynraNode " + std::to_string(node_id_) + "] Starting failover round "
+            + std::to_string(current_round + 1) + " epoch=" + std::to_string(recovery_epoch_));
 
         RecoveryControlMessage start{};
         start.type = RecoveryMsgType::recovery_start;
@@ -526,8 +537,9 @@ void SynraNode::run() {
         if (node_id_ != RECOVERY_COORD_NODE) {
             return;
         }
-        std::cout << "[SynraNode " << node_id_ << "] All clients quiesced for epoch "
-                  << recovery_epoch_ << ", switching permissions\n";
+        verbose_log(
+            "[SynraNode " + std::to_string(node_id_) + "] All clients quiesced for epoch "
+            + std::to_string(recovery_epoch_) + ", switching permissions");
         reregister_recovery_log_readonly();
         install_local_report();
         reregister_recovery_frontiers_writable();
@@ -643,16 +655,6 @@ void SynraNode::run() {
             recovery_notice_sent_at - failure_injected_at).count());
         samples.push_back(sample);
 
-        if (samples.size() == 1) {
-            std::cout << "RECOVERY_HDR: round,total_failover_us,permission_switch_us,detection_us,quiesce_us,detection_delay_us\n";
-        }
-        std::cout << "RECOVERY_CSV: "
-                  << sample.round << ","
-                  << sample.total_failover_us << ","
-                  << sample.permission_switch_us << ","
-                  << sample.detection_us << ","
-                  << sample.quiesce_us << ","
-                  << sample.detection_delay_us << "\n";
         return true;
     };
 
@@ -669,8 +671,9 @@ void SynraNode::run() {
             if (node_id_ == RECOVERY_COORD_NODE) {
                 break;
             }
-            std::cout << "[SynraNode " << node_id_ << "] Received recovery_switch epoch="
-                      << msg.epoch << "\n";
+            verbose_log(
+                "[SynraNode " + std::to_string(node_id_) + "] Received recovery_switch epoch="
+                + std::to_string(msg.epoch));
             reregister_recovery_log_readonly();
             install_local_report();
             reregister_recovery_frontiers_writable();
@@ -684,16 +687,18 @@ void SynraNode::run() {
                 recovery_ticket_frontiers_[sender_id] = msg.ticket_frontier;
                 recovery_ticket_turns_[sender_id] = msg.ticket_turn;
                 recovery_log_creds_[sender_id] = msg.log_creds[sender_id];
-                std::cout << "[SynraNode " << node_id_ << "] Received replica_report from node "
-                          << sender_id << " epoch=" << msg.epoch << "\n";
+                verbose_log(
+                    "[SynraNode " + std::to_string(node_id_) + "] Received replica_report from node "
+                    + std::to_string(sender_id) + " epoch=" + std::to_string(msg.epoch));
             }
             break;
         case RecoveryMsgType::replica_repaired:
             if (node_id_ == RECOVERY_COORD_NODE && sender_id < MAX_REPLICAS) {
                 recovery_repair_received_[sender_id] = true;
                 recovery_log_creds_[sender_id] = msg.log_creds[sender_id];
-                std::cout << "[SynraNode " << node_id_ << "] Received replica_repaired from node "
-                          << sender_id << " epoch=" << msg.epoch << "\n";
+                verbose_log(
+                    "[SynraNode " + std::to_string(node_id_) + "] Received replica_repaired from node "
+                    + std::to_string(sender_id) + " epoch=" + std::to_string(msg.epoch));
             }
             break;
         case RecoveryMsgType::baseline_reset_start:
@@ -703,8 +708,9 @@ void SynraNode::run() {
         case RecoveryMsgType::new_creds:
             recovery_epoch_ = std::max(recovery_epoch_, msg.epoch);
             recovery_log_creds_ = msg.log_creds;
-            std::cout << "[SynraNode " << node_id_ << "] Received new_creds epoch="
-                      << msg.epoch << "\n";
+            verbose_log(
+                "[SynraNode " + std::to_string(node_id_) + "] Received new_creds epoch="
+                + std::to_string(msg.epoch));
             install_recovered_frontiers(msg.cas_frontier, msg.ticket_frontier, msg.ticket_turn);
             repair_local_log_from_quorum(msg.live_mask, msg.cas_frontier, msg.ticket_frontier);
             reregister_recovery_log_writable();
@@ -798,6 +804,16 @@ void SynraNode::run() {
                     exit_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(RECOVERY_EXPERIMENT_DONE_GRACE_MS);
                 }
                 if (!summary_printed) {
+                    std::cout << "RECOVERY_HDR: round,total_failover_us,permission_switch_us,detection_us,quiesce_us,detection_delay_us\n";
+                    for (const auto& sample : samples) {
+                        std::cout << "RECOVERY_CSV: "
+                                  << sample.round << ","
+                                  << sample.total_failover_us << ","
+                                  << sample.permission_switch_us << ","
+                                  << sample.detection_us << ","
+                                  << sample.quiesce_us << ","
+                                  << sample.detection_delay_us << "\n";
+                    }
                     std::cout << "[SynraNode " << node_id_ << "] Completed " << samples.size()
                               << " measured failover rounds\n";
                     summary_printed = true;
@@ -829,8 +845,9 @@ void SynraNode::run() {
                         && sender_id < TOTAL_CLIENTS
                         && msg.epoch == recovery_epoch_) {
                         client_quiesced[sender_id] = true;
-                        std::cout << "[SynraNode " << node_id_ << "] Client " << sender_id
-                                  << " quiesced for epoch " << msg.epoch << "\n";
+                        verbose_log(
+                            "[SynraNode " + std::to_string(node_id_) + "] Client "
+                            + std::to_string(sender_id) + " quiesced for epoch " + std::to_string(msg.epoch));
                     }
                 } else {
                     handle_peer_control_message(msg, sender_id);
