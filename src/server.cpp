@@ -509,7 +509,10 @@ void Server::start(uint16_t port) {
                 conn = connect_to_node(CLUSTER_NODES[target], port);
                 connected = true;
                 break;
-            } catch (...) {
+            } catch (const std::exception& e) {
+                std::cerr << "[Server " << node_id_ << "] connect attempt "
+                          << (attempt + 1) << " to node " << target
+                          << " failed: " << e.what() << "\n";
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
             }
         }
@@ -546,6 +549,9 @@ void Server::start(uint16_t port) {
 
         if (!incoming ||
             event->param.conn.private_data_len < sizeof(ConnPrivateData)) {
+            std::cerr << "[Server " << node_id_ << "] Rejecting connect request: private data len="
+                      << event->param.conn.private_data_len
+                      << " expected=" << sizeof(ConnPrivateData) << "\n";
             rdma_reject(new_id, nullptr, 0);
             rdma_ack_cm_event(event);
             continue;
@@ -604,6 +610,8 @@ void Server::start(uint16_t port) {
         qp_attr.sq_sig_all         = 0;
 
         if (rdma_create_qp(new_id, pd_, &qp_attr)) {
+            std::cerr << "[Server " << node_id_ << "] rdma_create_qp failed for incoming connection from node "
+                      << incoming->node_id << " type=" << static_cast<int>(incoming->type) << "\n";
             rdma_reject(new_id, nullptr, 0);
             rdma_ack_cm_event(event);
             continue;
@@ -617,6 +625,9 @@ void Server::start(uint16_t port) {
         accept_params.rnr_retry_count = 7;
 
         if (rdma_accept(new_id, &accept_params)) {
+            std::cerr << "[Server " << node_id_ << "] rdma_accept failed for node "
+                      << incoming->node_id << " type=" << static_cast<int>(incoming->type)
+                      << " private_data_len=" << sizeof(server_creds_) << "\n";
             rdma_destroy_qp(new_id);
             rdma_ack_cm_event(event);
             continue;

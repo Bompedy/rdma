@@ -279,7 +279,7 @@ enum class ConnType : uint8_t { FOLLOWER, CLIENT, LEADER };
 struct RecoveryRegionCred {
     uintptr_t addr = 0;
     uint32_t rkey = 0;
-};
+} __attribute__((packed));
 
 struct ConnPrivateData {
     uintptr_t addr;
@@ -290,6 +290,8 @@ struct ConnPrivateData {
     RecoveryRegionCred prototype_turn;
     RecoveryRegionCred prototype_log;
 } __attribute__((packed));
+
+static_assert(sizeof(ConnPrivateData) <= 56, "ConnPrivateData exceeds RDMA CM request private-data budget");
 
 struct RemoteNode {
     rdma_cm_id* id;
