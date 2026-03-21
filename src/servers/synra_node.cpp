@@ -3,6 +3,7 @@
 #include <chrono>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -91,8 +92,10 @@ void SynraNode::run() {
     CoordinatorPhase phase = node_id_ == RECOVERY_COORD_NODE ? CoordinatorPhase::warmup : CoordinatorPhase::done;
     uint32_t current_round = 0;
     bool summary_printed = false;
+    bool experiment_done_broadcast = false;
     bool published_new_creds = false;
     bool sent_recovery_done = false;
+    std::optional<std::chrono::steady_clock::time_point> exit_deadline;
 
     auto reset_report_state = [&]() {
         recovery_report_received_.fill(false);
@@ -423,6 +426,9 @@ void SynraNode::run() {
             published_new_creds = false;
             sent_recovery_done = false;
             break;
+        case RecoveryMsgType::experiment_done:
+            exit_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(RECOVERY_EXPERIMENT_DONE_GRACE_MS);
+            break;
         case RecoveryMsgType::go:
         case RecoveryMsgType::invalid:
             break;
@@ -471,6 +477,20 @@ void SynraNode::run() {
                 }
                 break;
             case CoordinatorPhase::done:
+                if (!experiment_done_broadcast) {
+                    RecoveryControlMessage done{};
+                    done.type = RecoveryMsgType::experiment_done;
+                    done.epoch = recovery_epoch_;
+                    done.lock_id = RECOVERY_TARGET_LOCK;
+                    done.from_node = node_id_;
+                    done.failed_node = RECOVERY_FAILED_NODE;
+                    done.replacement_node = RECOVERY_REPLACEMENT_NODE;
+                    done.frontier_host = RECOVERY_FAILED_NODE;
+                    done.live_mask = recovery_live_mask_all_nodes();
+                    broadcast_control_message(done, true);
+                    experiment_done_broadcast = true;
+                    exit_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(RECOVERY_EXPERIMENT_DONE_GRACE_MS);
+                }
                 if (!summary_printed) {
                     std::cout << "[SynraNode " << node_id_ << "] Completed " << samples.size()
                               << " measured failover rounds\n";
@@ -478,6 +498,10 @@ void SynraNode::run() {
                 }
                 break;
             }
+        }
+
+        if (exit_deadline.has_value() && std::chrono::steady_clock::now() >= *exit_deadline) {
+            return;
         }
 
         const int n = ibv_poll_cq(cq_, 64, wc);

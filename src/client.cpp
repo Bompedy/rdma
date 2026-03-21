@@ -164,6 +164,10 @@ void Client::handle_control_message(const RecoveryControlMessage& msg, const uin
             }
         }
         break;
+    case RecoveryMsgType::experiment_done:
+        experiment_done_ = true;
+        recovery_route_.recovering = false;
+        break;
     case RecoveryMsgType::replica_report:
     case RecoveryMsgType::invalid:
         break;

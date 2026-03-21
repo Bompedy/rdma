@@ -697,7 +697,7 @@ void run_ticket_faa_lock_pipeline(
         op.release_log_quorum = 0;
         op.release_owner_log_done = false;
         if (!is_retry) {
-            op.latency_index = submitted;
+            op.latency_index = submitted % NUM_OPS_PER_CLIENT;
             submitted++;
         }
         op.started_at = std::chrono::steady_clock::now();
@@ -719,11 +719,11 @@ void run_ticket_faa_lock_pipeline(
     };
 
     // Fill the active window so ticket fetches and later waits can overlap.
-    while (active < config.active_window && submitted < NUM_OPS_PER_CLIENT) {
+    while (active < config.active_window && !client.experiment_done()) {
         submit_op(active);
     }
 
-    while (completed < NUM_OPS_PER_CLIENT) {
+    while (!client.experiment_done() || active > 0) {
         if (client.recovery_active()) {
             for (auto& op : ops) {
                 if (!op.active || !use_recovery_route(op.lock_id)) continue;
@@ -734,15 +734,15 @@ void run_ticket_faa_lock_pipeline(
             }
         } else {
             for (size_t slot = 0; slot < ops.size(); ++slot) {
-                if (ops[slot].retry_pending && !ops[slot].active) {
+                if (!client.experiment_done() && ops[slot].retry_pending && !ops[slot].active) {
                     retry_op(slot);
                 }
             }
         }
 
-        while (!client.recovery_active() && active < config.active_window && submitted < NUM_OPS_PER_CLIENT) {
+        while (!client.experiment_done() && !client.recovery_active() && active < config.active_window) {
             bool submitted_any = false;
-            for (size_t slot = 0; slot < ops.size() && active < config.active_window && submitted < NUM_OPS_PER_CLIENT; ++slot) {
+            for (size_t slot = 0; slot < ops.size() && active < config.active_window; ++slot) {
                 if (!ops[slot].active && !ops[slot].retry_pending) {
                     submit_op(slot);
                     submitted_any = true;
@@ -929,7 +929,7 @@ void run_ticket_faa_lock_pipeline(
                     op.phase = TicketFaaPhase::idle;
                     completed++;
                     active--;
-                    if (!client.recovery_active() && submitted < NUM_OPS_PER_CLIENT) submit_op(slot);
+                    if (!client.experiment_done() && !client.recovery_active()) submit_op(slot);
                 }
             }
         }

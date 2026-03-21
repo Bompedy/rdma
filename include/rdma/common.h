@@ -67,7 +67,7 @@ constexpr size_t NUM_CLIENTS_PER_MACHINE = 1;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_CLIENT_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
-constexpr size_t MAX_LOCKS = 1000;
+constexpr size_t MAX_LOCKS = 1;
 
 // Prototype recovery scope: one lock whose frontier starts on node 0 and moves
 // to node 1 after a hardcoded failure trigger.
@@ -80,6 +80,7 @@ constexpr uint32_t RECOVERY_NUM_ROUNDS = 1;
 constexpr uint32_t RECOVERY_DETECTION_DELAY_MS = 10;
 constexpr uint32_t RECOVERY_RESET_QUIESCE_MS = 10;
 constexpr uint32_t RECOVERY_ROUND_GAP_MS = 10;
+constexpr uint32_t RECOVERY_EXPERIMENT_DONE_GRACE_MS = 250;
 constexpr size_t RECOVERY_CTRL_RECV_RING = 8;
 
 // ─── CAS config ───
@@ -322,6 +323,7 @@ enum class RecoveryMsgType : uint8_t {
     new_creds = 4,
     recovery_done = 5,
     baseline_reset_start = 6,
+    experiment_done = 7,
 };
 
 struct RecoveryControlMessage {

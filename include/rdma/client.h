@@ -31,6 +31,7 @@ public:
     [[nodiscard]] const RecoveryRoute& recovery_route() const { return recovery_route_; }
     [[nodiscard]] uint32_t go_messages() const { return go_messages_; }
     [[nodiscard]] bool recovery_active() const { return recovery_route_.recovering; }
+    [[nodiscard]] bool experiment_done() const { return experiment_done_; }
 
     bool handle_control_completion(const ibv_wc& wc);
     void mark_recovery_retry_pending();
@@ -55,4 +56,5 @@ private:
     RecoveryRoute recovery_route_{};
     uint32_t go_messages_ = 0;
     bool recovery_retry_pending_ = false;
+    bool experiment_done_ = false;
 };

@@ -152,25 +152,46 @@ int main() {
 
             // ─── Post-benchmark stats ───
 
-            const size_t local_total_ops = NUM_CLIENTS_PER_MACHINE * NUM_OPS_PER_CLIENT;
+            std::vector<uint64_t> measured_latencies;
+            measured_latencies.reserve(NUM_CLIENTS_PER_MACHINE * NUM_OPS_PER_CLIENT);
+            size_t local_total_ops = 0;
+            for (uint32_t i = 0; i < NUM_CLIENTS_PER_MACHINE; ++i) {
+                const uint32_t global_id = machine_id * NUM_CLIENTS_PER_MACHINE + i;
+                uint64_t worker_completed = 0;
+                for (uint64_t count : (*lock_counts)[global_id]) {
+                    worker_completed += count;
+                }
+                const size_t recorded = std::min<uint64_t>(worker_completed, NUM_OPS_PER_CLIENT);
+                local_total_ops += recorded;
+                const size_t base = static_cast<size_t>(i) * NUM_OPS_PER_CLIENT;
+                measured_latencies.insert(
+                    measured_latencies.end(),
+                    all_latencies->begin() + static_cast<std::ptrdiff_t>(base),
+                    all_latencies->begin() + static_cast<std::ptrdiff_t>(base + recorded));
+            }
             const double wall_s = std::chrono::duration_cast<std::chrono::microseconds>(
                 wall_end - wall_start).count() / 1'000'000.0;
+            const size_t recorded_ops_per_client = local_total_ops / NUM_CLIENTS_PER_MACHINE;
 
-            std::sort(all_latencies->begin(), all_latencies->begin() + local_total_ops);
+            if (local_total_ops == 0) {
+                throw std::runtime_error("No client operations completed before experiment end");
+            }
+
+            std::sort(measured_latencies.begin(), measured_latencies.end());
 
             auto get_p = [&](double p) -> double {
                 size_t idx = static_cast<size_t>(p * (local_total_ops - 1));
-                return (*all_latencies)[idx] / 1000.0;
+                return measured_latencies[idx] / 1000.0;
             };
 
             double sum_us = 0;
             for (size_t i = 0; i < local_total_ops; ++i)
-                sum_us += (*all_latencies)[i] / 1000.0;
+                sum_us += measured_latencies[i] / 1000.0;
             double mean = sum_us / local_total_ops;
 
             double sq_sum = 0;
             for (size_t i = 0; i < local_total_ops; ++i) {
-                double diff = ((*all_latencies)[i] / 1000.0) - mean;
+                double diff = (measured_latencies[i] / 1000.0) - mean;
                 sq_sum += diff * diff;
             }
             double std_dev = std::sqrt(sq_sum / local_total_ops);
@@ -224,8 +245,8 @@ int main() {
             }
             std::cout << "Clients:        " << std::setw(14) << TOTAL_CLIENTS
                       << " (" << NUM_CLIENTS_PER_MACHINE << " on this machine)\n";
-            std::cout << "Ops/Client:     " << std::setw(14) << NUM_OPS_PER_CLIENT << "\n";
-            std::cout << "Total Ops:      " << std::setw(14) << local_total_ops << "\n";
+            std::cout << "Recorded/Client:" << std::setw(14) << recorded_ops_per_client << "\n";
+            std::cout << "Total Recorded: " << std::setw(14) << local_total_ops << "\n";
             std::cout << std::string(50, '-') << "\n";
             std::cout << "Wall Clock:     " << std::setw(14) << std::fixed
                       << std::setprecision(3) << wall_s << " s\n";
