@@ -259,6 +259,9 @@ bool Client::handle_control_completion(const ibv_wc& wc) {
     }
     const uint16_t conn_index = client_control_conn_index(wc.wr_id);
     const uint16_t slot = client_control_slot_index(wc.wr_id);
+    if (wc.status == IBV_WC_WR_FLUSH_ERR) {
+        return true;
+    }
     if (wc.status != IBV_WC_SUCCESS) {
         throw std::runtime_error(
             std::string("Client: control recv completion failed status=")
