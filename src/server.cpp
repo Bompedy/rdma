@@ -343,11 +343,6 @@ bool Server::poll_control_completion(const ibv_wc& wc, RecoveryControlMessage& o
     from_client = server_control_from_client(wc.wr_id);
     const uint16_t conn_index = server_control_conn_index(wc.wr_id);
     const uint16_t slot = server_control_slot_index(wc.wr_id);
-    if (wc.status == IBV_WC_WR_FLUSH_ERR) {
-        out_msg = RecoveryControlMessage{};
-        sender_id = 0;
-        return true;
-    }
     if (wc.status != IBV_WC_SUCCESS) {
         throw std::runtime_error(
             std::string("Server: control recv completion failed status=")
