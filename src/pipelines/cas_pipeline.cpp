@@ -214,7 +214,7 @@ void mirror_frontier_value(const Client& client, const uint32_t lock_id, const u
     const auto& conns = client.connections();
     const auto& route = client.recovery_route();
     for (const auto& conn : conns) {
-        if (!recovery_node_active(route, conn.node_id) || conn.prototype_frontier.addr == 0 || conn.prototype_frontier.rkey == 0) {
+        if (!recovery_node_active(route, conn.node_id)) {
             continue;
         }
         ibv_sge sge{};
@@ -228,8 +228,8 @@ void mirror_frontier_value(const Client& client, const uint32_t lock_id, const u
         wr.send_flags = IBV_SEND_INLINE;
         wr.sg_list = &sge;
         wr.num_sge = 1;
-        wr.wr.rdma.remote_addr = conn.prototype_frontier.addr;
-        wr.wr.rdma.rkey = conn.prototype_frontier.rkey;
+        wr.wr.rdma.remote_addr = conn.addr + lock_control_offset(lock_id);
+        wr.wr.rdma.rkey = conn.rkey;
         ibv_post_send(conn.id->qp, &wr, &bad_wr);
     }
 }

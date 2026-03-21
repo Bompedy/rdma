@@ -228,7 +228,7 @@ void mirror_frontier_value(const Client& client, const uint32_t lock_id, const u
         return;
     }
     for (const auto& conn : client.connections()) {
-        if (!recovery_node_active(client.recovery_route(), conn.node_id) || conn.prototype_frontier.addr == 0 || conn.prototype_frontier.rkey == 0) {
+        if (!recovery_node_active(client.recovery_route(), conn.node_id)) {
             continue;
         }
         ibv_sge sge{};
@@ -241,8 +241,8 @@ void mirror_frontier_value(const Client& client, const uint32_t lock_id, const u
         wr.send_flags = IBV_SEND_INLINE;
         wr.sg_list = &sge;
         wr.num_sge = 1;
-        wr.wr.rdma.remote_addr = conn.prototype_frontier.addr;
-        wr.wr.rdma.rkey = conn.prototype_frontier.rkey;
+        wr.wr.rdma.remote_addr = conn.addr + lock_control_offset(lock_id);
+        wr.wr.rdma.rkey = conn.rkey;
         ibv_post_send(conn.id->qp, &wr, &bad_wr);
     }
 }
@@ -252,7 +252,7 @@ void mirror_turn_value(const Client& client, const uint32_t lock_id, const uint6
         return;
     }
     for (const auto& conn : client.connections()) {
-        if (!recovery_node_active(client.recovery_route(), conn.node_id) || conn.prototype_turn.addr == 0 || conn.prototype_turn.rkey == 0) {
+        if (!recovery_node_active(client.recovery_route(), conn.node_id)) {
             continue;
         }
         ibv_sge sge{};
@@ -265,8 +265,8 @@ void mirror_turn_value(const Client& client, const uint32_t lock_id, const uint6
         wr.send_flags = IBV_SEND_INLINE;
         wr.sg_list = &sge;
         wr.num_sge = 1;
-        wr.wr.rdma.remote_addr = conn.prototype_turn.addr;
-        wr.wr.rdma.rkey = conn.prototype_turn.rkey;
+        wr.wr.rdma.remote_addr = conn.addr + lock_turn_offset(lock_id);
+        wr.wr.rdma.rkey = conn.rkey;
         ibv_post_send(conn.id->qp, &wr, &bad_wr);
     }
 }

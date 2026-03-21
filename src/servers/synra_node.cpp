@@ -40,15 +40,15 @@ uint8_t* local_log_ptr(void* buf) {
 }
 
 uint64_t scan_local_cas_frontier(void* buf) {
-    return *local_frontier_ptr(buf);
+    return *reinterpret_cast<uint64_t*>(static_cast<uint8_t*>(buf) + lock_control_offset(RECOVERY_TARGET_LOCK));
 }
 
 uint64_t scan_local_ticket_frontier(void* buf) {
-    return *local_frontier_ptr(buf);
+    return *reinterpret_cast<uint64_t*>(static_cast<uint8_t*>(buf) + lock_control_offset(RECOVERY_TARGET_LOCK));
 }
 
 uint64_t scan_local_turn(void* buf) {
-    return *local_turn_ptr(buf);
+    return *reinterpret_cast<uint64_t*>(static_cast<uint8_t*>(buf) + lock_turn_offset(RECOVERY_TARGET_LOCK));
 }
 
 uint64_t surviving_live_mask() {
