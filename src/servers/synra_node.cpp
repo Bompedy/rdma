@@ -337,6 +337,8 @@ void SynraNode::run() {
         repaired.frontier_host = RECOVERY_REPLACEMENT_NODE;
         repaired.live_mask = surviving_live_mask();
         repaired.log_creds[node_id_] = server_creds_.prototype_log;
+        std::cout << "[SynraNode " << node_id_ << "] Sending replica_repaired epoch="
+                  << repaired.epoch << "\n";
         send_control_message(peers_[RECOVERY_COORD_NODE].cm_id, repaired);
     };
 
@@ -682,12 +684,16 @@ void SynraNode::run() {
                 recovery_ticket_frontiers_[sender_id] = msg.ticket_frontier;
                 recovery_ticket_turns_[sender_id] = msg.ticket_turn;
                 recovery_log_creds_[sender_id] = msg.log_creds[sender_id];
+                std::cout << "[SynraNode " << node_id_ << "] Received replica_report from node "
+                          << sender_id << " epoch=" << msg.epoch << "\n";
             }
             break;
         case RecoveryMsgType::replica_repaired:
             if (node_id_ == RECOVERY_COORD_NODE && sender_id < MAX_REPLICAS) {
                 recovery_repair_received_[sender_id] = true;
                 recovery_log_creds_[sender_id] = msg.log_creds[sender_id];
+                std::cout << "[SynraNode " << node_id_ << "] Received replica_repaired from node "
+                          << sender_id << " epoch=" << msg.epoch << "\n";
             }
             break;
         case RecoveryMsgType::baseline_reset_start:
@@ -696,6 +702,9 @@ void SynraNode::run() {
             break;
         case RecoveryMsgType::new_creds:
             recovery_epoch_ = std::max(recovery_epoch_, msg.epoch);
+            recovery_log_creds_ = msg.log_creds;
+            std::cout << "[SynraNode " << node_id_ << "] Received new_creds epoch="
+                      << msg.epoch << "\n";
             install_recovered_frontiers(msg.cas_frontier, msg.ticket_frontier, msg.ticket_turn);
             repair_local_log_from_quorum(msg.live_mask, msg.cas_frontier, msg.ticket_frontier);
             reregister_recovery_log_writable();
