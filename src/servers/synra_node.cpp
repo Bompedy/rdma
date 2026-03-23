@@ -33,6 +33,7 @@ struct FailoverSample {
     uint64_t detection_us = 0;
     uint64_t quiesce_us = 0;
     uint64_t detection_delay_us = 0;
+    uint64_t repaired_slots = 0;
 };
 
 uint64_t* local_frontier_ptr(void* buf) {
@@ -165,6 +166,7 @@ void SynraNode::run() {
     uint64_t next_read_wr_id = 1;
     std::function<void(const RecoveryControlMessage&, uint32_t)> handle_peer_control_message;
     uint64_t recovery_active_mask = 0;
+    uint64_t repaired_slots_this_round = 0;
 
     auto reset_report_state = [&]() {
         recovery_report_received_.fill(false);
@@ -289,6 +291,7 @@ void SynraNode::run() {
     };
 
     auto repair_local_log_from_quorum = [&](const uint64_t live_mask, const uint64_t cas_frontier, const uint64_t ticket_frontier) {
+        uint64_t repaired = 0;
         const uint64_t limit = std::min<uint64_t>(
             MAX_LOG_PER_LOCK,
             std::max(cas_used_physical_slots(cas_frontier), ticket_used_physical_slots(ticket_frontier)));
@@ -319,8 +322,10 @@ void SynraNode::run() {
             }
             if (chosen_value != EMPTY_SLOT && chosen_count >= QUORUM) {
                 write_local_log_slot(buf_, slot, chosen_value);
+                repaired++;
             }
         }
+        return repaired;
     };
 
     auto send_repaired_to_coordinator = [&]() {
@@ -505,6 +510,7 @@ void SynraNode::run() {
         published_new_creds = false;
         sent_recovery_done = false;
         recovery_active_mask = 0;
+        repaired_slots_this_round = 0;
         reset_report_state();
         reset_client_quiesced();
         std::cout << "[SynraNode " << node_id_ << "] Starting failover round "
@@ -579,7 +585,10 @@ void SynraNode::run() {
         const uint64_t recovered_ticket_frontier = quorum_median(ticket_values);
         const uint64_t recovered_turn = quorum_median(turn_values);
         install_recovered_frontiers(recovered_cas_frontier, recovered_ticket_frontier, recovered_turn);
-        repair_local_log_from_quorum(recovery_active_mask, recovered_cas_frontier, recovered_ticket_frontier);
+        repaired_slots_this_round = repair_local_log_from_quorum(
+            recovery_active_mask,
+            recovered_cas_frontier,
+            recovered_ticket_frontier);
         reregister_recovery_log_writable();
         recovery_log_creds_[node_id_] = server_creds_.prototype_log;
         recovery_repair_received_[node_id_] = true;
@@ -641,10 +650,11 @@ void SynraNode::run() {
             permission_switch_started_at - recovery_notice_sent_at).count());
         sample.detection_delay_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
             recovery_notice_sent_at - failure_injected_at).count());
+        sample.repaired_slots = repaired_slots_this_round;
         samples.push_back(sample);
 
         if (samples.size() == 1) {
-            std::cout << "RECOVERY_HDR: round,total_failover_us,permission_switch_us,detection_us,quiesce_us,detection_delay_us\n";
+            std::cout << "RECOVERY_HDR: round,total_failover_us,permission_switch_us,detection_us,quiesce_us,detection_delay_us,repaired_slots\n";
         }
         std::cout << "RECOVERY_CSV: "
                   << sample.round << ","
@@ -652,7 +662,8 @@ void SynraNode::run() {
                   << sample.permission_switch_us << ","
                   << sample.detection_us << ","
                   << sample.quiesce_us << ","
-                  << sample.detection_delay_us << "\n";
+                  << sample.detection_delay_us << ","
+                  << sample.repaired_slots << "\n";
         return true;
     };
 
