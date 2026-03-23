@@ -63,7 +63,7 @@ constexpr uint8_t RDMA_INITIATOR_DEPTH = 16;
 // These knobs define the workload shape shared across all pipelines.
 
 constexpr size_t NUM_OPS = 500000;
-constexpr size_t NUM_CLIENTS_PER_MACHINE = 1;
+constexpr size_t NUM_CLIENTS_PER_MACHINE = 4;
 constexpr size_t TOTAL_CLIENTS = NUM_CLIENTS_PER_MACHINE * TOTAL_CLIENT_MACHINES;
 constexpr size_t NUM_OPS_PER_CLIENT = NUM_OPS / TOTAL_CLIENTS;
 constexpr size_t NUM_TOTAL_OPS = NUM_OPS_PER_CLIENT * TOTAL_CLIENTS;
@@ -87,7 +87,7 @@ constexpr size_t RECOVERY_CTRL_SEND_RING = 32;
 // ─── CAS config ───
 // Wrapped per-lock replicated log plus owner-node control word.
 
-constexpr size_t CAS_ACTIVE_WINDOW = 1;
+constexpr size_t CAS_ACTIVE_WINDOW = 9;
 constexpr size_t CAS_CQ_BATCH = 32;
 constexpr double CAS_ZIPF_SKEW = 0.5;
 constexpr bool CAS_SHARD_OWNER = true;
