@@ -40,4 +40,9 @@ protected:
 
 private:
     RemoteConnection connect_to_node(const std::string& ip, uint16_t port);
+    bool try_process_incoming_request(
+        size_t num_nodes,
+        uint32_t num_clients,
+        uint32_t& higher_connected,
+        uint32_t& clients_connected);
 };

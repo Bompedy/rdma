@@ -11,16 +11,29 @@
 #include <thread>
 #include <chrono>
 #include <sys/mman.h>
+#include <poll.h>
 
 #include "rdma/mu_encoding.h"
 
-// Wait for one specific CM event and fail fast if the connection state machine
-// deviates from the expected handshake step.
-static rdma_cm_event* wait_for_event(
+// Poll event channel with timeout (returns nullptr on timeout)
+static rdma_cm_event* poll_for_event(
     rdma_event_channel* ec,
     const rdma_cm_event_type expected,
-    const std::string& step
+    const std::string& step,
+    int timeout_ms
 ) {
+    pollfd pfd{};
+    pfd.fd = ec->fd;
+    pfd.events = POLLIN;
+
+    int ret = poll(&pfd, 1, timeout_ms);
+    if (ret < 0) {
+        throw std::runtime_error("poll() failed during " + step);
+    }
+    if (ret == 0) {
+        return nullptr;  // Timeout
+    }
+
     rdma_cm_event* event = nullptr;
     if (rdma_get_cm_event(ec, &event)) {
         throw std::runtime_error("rdma_get_cm_event failed during " + step);
@@ -30,7 +43,8 @@ static rdma_cm_event* wait_for_event(
         const auto actual = event->event;
         rdma_ack_cm_event(event);
         throw std::runtime_error(
-            "Expected " + step + " but got event " + std::to_string(actual) + " status " + std::to_string(status));
+            "Expected " + step + " but got event " + std::to_string(actual)
+            + " status " + std::to_string(status));
     }
     return event;
 }
@@ -88,8 +102,9 @@ void Client::connect(const std::vector<std::string>& node_ips, const uint16_t po
                 "rdma_resolve_addr failed for node " + std::to_string(i));
         }
 
-        auto* ev_addr = wait_for_event(ec_, RDMA_CM_EVENT_ADDR_RESOLVED,
-                                       "ADDR_RESOLVE");
+        auto* ev_addr = poll_for_event(ec_, RDMA_CM_EVENT_ADDR_RESOLVED,
+                                       "ADDR_RESOLVE", 10000);
+        if (!ev_addr) throw std::runtime_error("ADDR_RESOLVE timeout for node " + std::to_string(i));
         rdma_ack_cm_event(ev_addr);
 
         if (rdma_resolve_route(cm_id, 2000)) {
@@ -97,8 +112,9 @@ void Client::connect(const std::vector<std::string>& node_ips, const uint16_t po
                 "rdma_resolve_route failed for node " + std::to_string(i));
         }
 
-        auto* ev_route = wait_for_event(ec_, RDMA_CM_EVENT_ROUTE_RESOLVED,
-                                        "ROUTE_RESOLVE");
+        auto* ev_route = poll_for_event(ec_, RDMA_CM_EVENT_ROUTE_RESOLVED,
+                                        "ROUTE_RESOLVE", 10000);
+        if (!ev_route) throw std::runtime_error("ROUTE_RESOLVE timeout for node " + std::to_string(i));
         rdma_ack_cm_event(ev_route);
 
         if (!pd_) {
@@ -149,7 +165,8 @@ void Client::connect(const std::vector<std::string>& node_ips, const uint16_t po
             throw std::runtime_error("rdma_connect failed for node " + std::to_string(i));
         }
 
-        auto* ev_conn = wait_for_event(ec_, RDMA_CM_EVENT_ESTABLISHED, "ESTABLISHED");
+        auto* ev_conn = poll_for_event(ec_, RDMA_CM_EVENT_ESTABLISHED, "ESTABLISHED", 10000);
+        if (!ev_conn) throw std::runtime_error("ESTABLISHED timeout for node " + std::to_string(i));
         if (!ev_conn->param.conn.private_data ||
             ev_conn->param.conn.private_data_len < sizeof(ConnPrivateData)) {
             rdma_ack_cm_event(ev_conn);
