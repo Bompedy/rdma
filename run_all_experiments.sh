@@ -17,8 +17,6 @@ EXPERIMENTS=(
     "30000:Experiment 4"
     "50000:Experiment 5"
     "100000:Experiment 6"
-    "200000:Experiment 7"
-    "500000:Experiment 8"
 )
 
 for exp in "${EXPERIMENTS[@]}"; do
@@ -110,6 +108,9 @@ for exp in "${EXPERIMENTS[@]}"; do
     echo ""
     echo "--- Phase Throughput & Latency ---"
     grep -A 20 "PHASE THROUGHPUT" "/tmp/${TIMESTAMP}_${NUM_OPS}.txt" | head -25
+    echo ""
+    echo "--- Phase-Separated Latency ---"
+    grep -A 15 "PHASE-SEPARATED RESULTS" "/tmp/${TIMESTAMP}_${NUM_OPS}.txt" | head -20
     echo ""
     echo "--- Overall Benchmark Summary ---"
     grep -A 20 "RDMA LOCK BENCHMARK RESULTS" "/tmp/${TIMESTAMP}_${NUM_OPS}.txt" | head -25
