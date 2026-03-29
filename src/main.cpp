@@ -260,22 +260,31 @@ int main() {
                 wall_end - wall_start).count() / 1'000'000.0;
 
             // ─── Phase-separated stats for watch strategies ───
-            // IMPORTANT: Separate phases BEFORE sorting, since latencies are stored in submission order
+            // IMPORTANT: Separate phases BEFORE sorting, accounting for per-client stride layout
             std::vector<uint64_t> reg_lats, notif_lats;
             if (is_watch || is_mu_watch) {
                 constexpr size_t WATCH_EXTRA_NOTIFICATIONS = 2000;
                 const size_t registration_ops_total = NUM_TOTAL_OPS;
                 const size_t notification_ops_total = WATCH_EXTRA_NOTIFICATIONS;
+                const size_t notif_per_client = WATCH_EXTRA_NOTIFICATIONS / TOTAL_CLIENTS;
+                const size_t per_client_stride = NUM_OPS_PER_CLIENT + notif_per_client;
 
                 reg_lats.reserve(registration_ops_total);
                 notif_lats.reserve(notification_ops_total);
 
-                // Split latencies by phase (latencies stored in submission order: registrations first, then notifications)
-                for (size_t i = 0; i < local_total_ops; ++i) {
-                    if (i < registration_ops_total) {
-                        reg_lats.push_back((*all_latencies)[i]);
-                    } else {
-                        notif_lats.push_back((*all_latencies)[i]);
+                // Each client's data layout: [registrations (NUM_OPS_PER_CLIENT)][notifications (notif_per_client)]
+                // We need to iterate through each client's stride region and collect registrations and notifications separately
+                for (size_t client_id = 0; client_id < NUM_CLIENTS_PER_MACHINE; ++client_id) {
+                    const size_t client_offset = client_id * per_client_stride;
+
+                    // Collect registrations from this client
+                    for (size_t j = 0; j < NUM_OPS_PER_CLIENT; ++j) {
+                        reg_lats.push_back((*all_latencies)[client_offset + j]);
+                    }
+
+                    // Collect notifications from this client
+                    for (size_t j = 0; j < notif_per_client; ++j) {
+                        notif_lats.push_back((*all_latencies)[client_offset + NUM_OPS_PER_CLIENT + j]);
                     }
                 }
 
