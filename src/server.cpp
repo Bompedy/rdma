@@ -3,6 +3,7 @@
 // Generic server/node RDMA endpoint setup and shared lock-table MR registration.
 
 #include <arpa/inet.h>
+#include <cerrno>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -30,7 +31,6 @@ static rdma_cm_event* wait_for_event(
     return event;
 }
 
-// Construct one server endpoint and pre-size the peer/client connection tables.
 Server::Server(const uint32_t node_id)
     : node_id_(node_id)
     , peers_(CLUSTER_NODES.size())
@@ -40,7 +40,6 @@ Server::Server(const uint32_t node_id)
     server_creds_.type    = ConnType::FOLLOWER;  // node-to-node type
 }
 
-// Tear down all server-side RDMA resources and free the huge-page lock-table MR.
 Server::~Server() {
     for (auto& c : clients_) {
         if (c.cm_id && c.cm_id->qp) rdma_destroy_qp(c.cm_id);
@@ -89,6 +88,13 @@ RemoteConnection Server::connect_to_node(const std::string& ip, uint16_t port) {
 
         ev = wait_for_event(outbound_ec, RDMA_CM_EVENT_ROUTE_RESOLVED, "ROUTE_RESOLVE");
         rdma_ack_cm_event(ev);
+
+        std::cerr << "[DEBUG] Route resolved to " << ip << std::endl;
+        if (cm_id->verbs) {
+            std::cerr << "[DEBUG] Using device: " << ibv_get_device_name(cm_id->verbs->device)
+                      << " port: " << (int)cm_id->port_num << std::endl;
+        }
+        std::cerr.flush();
 
         // init RDMA resources on first connection
         if (!pd_) {
@@ -159,37 +165,97 @@ RemoteConnection Server::connect_to_node(const std::string& ip, uint16_t port) {
 
 // ─── Main startup: mesh nodes + accept clients ───
 
-// Start the server listener, build the server mesh, accept clients, then enter
-// the subclass-specific run loop.
 void Server::start(uint16_t port) {
+    std::cerr << "[DEBUG] Server::start() called for node " << node_id_ << std::endl;
+    std::cerr.flush();
+
+    std::cerr << "[DEBUG] Creating event channel..." << std::endl;
+    std::cerr.flush();
     ec_ = rdma_create_event_channel();
     if (!ec_) throw std::runtime_error("rdma_create_event_channel failed");
+    std::cerr << "[DEBUG] Event channel created" << std::endl;
+    std::cerr.flush();
 
+    std::cerr << "[DEBUG] Creating listener cm_id..." << std::endl;
+    std::cerr.flush();
     if (rdma_create_id(ec_, &listener_, nullptr, RDMA_PS_TCP))
         throw std::runtime_error("rdma_create_id failed");
+    std::cerr << "[DEBUG] Listener cm_id created" << std::endl;
+    std::cerr.flush();
 
     sockaddr_in addr{};
     addr.sin_family      = AF_INET;
     addr.sin_port        = htons(port);
-    addr.sin_addr.s_addr = INADDR_ANY;
+    // Bind to the specific node IP instead of INADDR_ANY for RDMA device selection
+    inet_pton(AF_INET, CLUSTER_NODES[node_id_].c_str(), &addr.sin_addr);
 
-    if (rdma_bind_addr(listener_, reinterpret_cast<sockaddr*>(&addr)))
-        throw std::runtime_error("rdma_bind_addr failed");
+    std::cerr << "[DEBUG] Calling rdma_bind_addr on " << CLUSTER_NODES[node_id_] << ":" << port << "..." << std::endl;
+    std::cerr.flush();
+    if (rdma_bind_addr(listener_, reinterpret_cast<sockaddr*>(&addr))) {
+        std::cerr << "[ERROR] rdma_bind_addr failed with errno=" << errno
+                  << " (" << strerror(errno) << ")" << std::endl;
+        if (listener_->verbs) {
+            std::cerr << "[ERROR] Device was: " << ibv_get_device_name(listener_->verbs->device) << std::endl;
+            std::cerr << "[ERROR] Port num: " << (int)listener_->port_num << std::endl;
+        } else {
+            std::cerr << "[ERROR] listener_->verbs is NULL (no device selected yet)" << std::endl;
+        }
+        std::cerr.flush();
+        throw std::runtime_error("rdma_bind_addr failed: " + std::string(strerror(errno)));
+    }
+    std::cerr << "[DEBUG] rdma_bind_addr succeeded" << std::endl;
+    if (listener_->verbs) {
+        std::cerr << "[DEBUG] Bound to device: " << ibv_get_device_name(listener_->verbs->device)
+                  << " port: " << (int)listener_->port_num << std::endl;
+    }
+    std::cerr.flush();
+
+    std::cerr << "[DEBUG] Calling rdma_listen..." << std::endl;
+    std::cerr.flush();
     if (rdma_listen(listener_, 32))
         throw std::runtime_error("rdma_listen failed");
+    std::cerr << "[DEBUG] rdma_listen succeeded" << std::endl;
+    std::cerr.flush();
 
+    std::cerr << "[DEBUG] About to allocate server buffer ("
+              << (SERVER_ALIGNED_SIZE / 1024 / 1024) << " MB)..." << std::endl;
+    std::cerr.flush();
     buf_ = allocate_server_buffer();
+    std::cerr << "[DEBUG] Server buffer allocated!" << std::endl;
+    std::cerr.flush();
 
+    std::cerr << "[DEBUG] Initializing " << MAX_LOCKS << " locks..." << std::endl;
+    std::cerr.flush();
     auto* base = static_cast<uint8_t*>(buf_);
     for (uint32_t i = 0; i < MAX_LOCKS; ++i) {
         *reinterpret_cast<volatile uint64_t*>(base + lock_control_offset(i)) = 0;
         *reinterpret_cast<volatile uint64_t*>(base + lock_turn_offset(i)) = 0;
+        if (i % 200 == 0) {
+            std::cerr << "[DEBUG] Initialized " << i << " locks..." << std::endl;
+            std::cerr.flush();
+        }
     }
+    std::cerr << "[DEBUG] All locks initialized!" << std::endl;
+    std::cerr.flush();
 
+    std::cerr << "[DEBUG] Getting cluster size..." << std::endl;
+    std::cerr.flush();
     const size_t num_nodes = CLUSTER_NODES.size();
-    const uint32_t num_clients = expected_clients();
+    std::cerr << "[DEBUG] num_nodes=" << num_nodes << std::endl;
+    std::cerr.flush();
 
-    std::cout << "[Server " << node_id_ << "] Listening on port " << port << "\n";
+    std::cerr << "[DEBUG] Calling expected_clients()..." << std::endl;
+    std::cerr.flush();
+    const uint32_t num_clients = expected_clients();
+    std::cerr << "[DEBUG] num_clients=" << num_clients << std::endl;
+    std::cerr.flush();
+
+    std::cerr << "[DEBUG] About to print 'Listening' message to stdout..." << std::endl;
+    std::cerr.flush();
+    std::cout << "[Server " << node_id_ << "] Listening on port " << port << std::endl;
+    std::cout.flush();
+    std::cerr << "[DEBUG] 'Listening' message printed!" << std::endl;
+    std::cerr.flush();
 
     // ── Phase 1: Connect to all lower-id nodes ──
     for (uint32_t target = 0; target < node_id_; ++target) {
@@ -212,36 +278,59 @@ void Server::start(uint16_t port) {
     }
 
     // ── Phase 2: Accept from higher-id nodes + all clients ──
+    std::cerr << "[DEBUG] Entering Phase 2 (accept connections)..." << std::endl;
+    std::cerr.flush();
     const uint32_t expect_higher = num_nodes - 1 - node_id_;
+    std::cerr << "[DEBUG] expect_higher=" << expect_higher << std::endl;
+    std::cerr.flush();
     uint32_t higher_connected = 0;
     uint32_t clients_connected = 0;
 
     std::cout << "[Server " << node_id_ << "] Waiting for "
               << expect_higher << " higher nodes + "
               << num_clients << " clients\n";
+    std::cout.flush();
 
     while (higher_connected < expect_higher ||
            clients_connected < num_clients) {
+
+        std::cerr << "[DEBUG] Calling rdma_get_cm_event (expecting " << (expect_higher - higher_connected)
+                  << " peers, " << (num_clients - clients_connected) << " clients)..." << std::endl;
+        std::cerr.flush();
 
         rdma_cm_event* event = nullptr;
         if (rdma_get_cm_event(ec_, &event))
             throw std::runtime_error("rdma_get_cm_event failed");
 
+        std::cerr << "[DEBUG] Got event type: " << event->event << std::endl;
+        std::cerr.flush();
+
         if (event->event != RDMA_CM_EVENT_CONNECT_REQUEST) {
+            std::cerr << "[DEBUG] Ignoring event (not CONNECT_REQUEST)" << std::endl;
+            std::cerr.flush();
             rdma_ack_cm_event(event);
             continue;
         }
+
+        std::cerr << "[DEBUG] Processing CONNECT_REQUEST..." << std::endl;
+        std::cerr.flush();
 
         rdma_cm_id* new_id = event->id;
         auto* incoming = static_cast<const ConnPrivateData*>(
             event->param.conn.private_data);
 
+        std::cerr << "[DEBUG] Checking private data..." << std::endl;
+        std::cerr.flush();
         if (!incoming ||
             event->param.conn.private_data_len < sizeof(ConnPrivateData)) {
+            std::cerr << "[DEBUG] Invalid private data, rejecting" << std::endl;
+            std::cerr.flush();
             rdma_reject(new_id, nullptr, 0);
             rdma_ack_cm_event(event);
             continue;
         }
+        std::cerr << "[DEBUG] Private data OK, node_id=" << incoming->node_id << " type=" << (int)incoming->type << std::endl;
+        std::cerr.flush();
 
         // init RDMA resources if first accepted connection
         if (!pd_) {
@@ -264,6 +353,8 @@ void Server::start(uint16_t port) {
             server_creds_.rkey = mr_->rkey;
         }
 
+        std::cerr << "[DEBUG] Creating QP..." << std::endl;
+        std::cerr.flush();
         ibv_qp_init_attr qp_attr{};
         qp_attr.qp_type            = IBV_QPT_RC;
         qp_attr.send_cq            = cq_;
@@ -276,11 +367,17 @@ void Server::start(uint16_t port) {
         qp_attr.sq_sig_all         = 0;
 
         if (rdma_create_qp(new_id, pd_, &qp_attr)) {
+            std::cerr << "[DEBUG] QP creation failed, rejecting" << std::endl;
+            std::cerr.flush();
             rdma_reject(new_id, nullptr, 0);
             rdma_ack_cm_event(event);
             continue;
         }
+        std::cerr << "[DEBUG] QP created successfully" << std::endl;
+        std::cerr.flush();
 
+        std::cerr << "[DEBUG] Calling rdma_accept..." << std::endl;
+        std::cerr.flush();
         rdma_conn_param accept_params{};
         accept_params.private_data     = &server_creds_;
         accept_params.private_data_len = sizeof(server_creds_);
@@ -289,33 +386,69 @@ void Server::start(uint16_t port) {
         accept_params.rnr_retry_count = 7;
 
         if (rdma_accept(new_id, &accept_params)) {
+            std::cerr << "[DEBUG] rdma_accept failed, rejecting" << std::endl;
+            std::cerr.flush();
             rdma_destroy_qp(new_id);
             rdma_ack_cm_event(event);
             continue;
         }
+        std::cerr << "[DEBUG] rdma_accept succeeded" << std::endl;
+        std::cerr.flush();
 
+        std::cerr << "[DEBUG] About to read node_id from incoming..." << std::endl;
+        std::cerr.flush();
         const uint32_t nid = incoming->node_id;
+        std::cerr << "[DEBUG] Got node_id=" << nid << " type=" << (int)incoming->type << std::endl;
+        std::cerr.flush();
 
         if (incoming->type == ConnType::FOLLOWER) {
+            std::cerr << "[DEBUG] Storing peer " << nid << "..." << std::endl;
+            std::cerr.flush();
             peers_[nid] = {nid, new_id, incoming->addr, incoming->rkey, incoming->type};
             higher_connected++;
             std::cout << "[Server " << node_id_ << "] Peer " << nid << " accepted\n";
         } else if (incoming->type == ConnType::CLIENT) {
+            std::cerr << "[DEBUG] Storing client " << nid << " (clients_ size=" << clients_.size() << ")..." << std::endl;
+            std::cerr.flush();
             clients_[nid] = {nid, new_id, incoming->addr, incoming->rkey, incoming->type};
+            std::cerr << "[DEBUG] Client stored, incrementing counter..." << std::endl;
+            std::cerr.flush();
             clients_connected++;
+            std::cerr << "[DEBUG] Printing acceptance message..." << std::endl;
+            std::cerr.flush();
             std::cout << "[Server " << node_id_ << "] Client "
                       << clients_connected << "/" << num_clients << "\n";
+            std::cout.flush();
+            std::cerr << "[DEBUG] Printed acceptance message" << std::endl;
+            std::cerr.flush();
         }
 
+        std::cerr << "[DEBUG] About to ack event..." << std::endl;
+        std::cerr.flush();
         rdma_ack_cm_event(event);
+        std::cerr << "[DEBUG] Event acked" << std::endl;
+        std::cerr.flush();
     }
 
-    // Mark self in peers
-    peers_[node_id_].id = node_id_;
+    std::cerr << "[DEBUG] Loop exited! higher_connected=" << higher_connected << " expect_higher=" << expect_higher
+              << " clients_connected=" << clients_connected << " num_clients=" << num_clients << std::endl;
+    std::cerr.flush();
 
+    // Mark self in peers
+    std::cerr << "[DEBUG] Marking self in peers..." << std::endl;
+    std::cerr.flush();
+    peers_[node_id_].id = node_id_;
+    std::cerr << "[DEBUG] Self marked" << std::endl;
+    std::cerr.flush();
+
+    std::cerr << "[DEBUG] Printing Ready message..." << std::endl;
+    std::cerr.flush();
     std::cout << "[Server " << node_id_ << "] Ready — "
               << (num_nodes - 1) << " peers + "
               << clients_connected << " clients\n";
+    std::cout.flush();
+    std::cerr << "[DEBUG] Ready message printed" << std::endl;
+    std::cerr.flush();
 
     signal_clients_ready();
     run();

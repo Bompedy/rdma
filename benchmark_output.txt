@@ -1,0 +1,331 @@
+[DEBUG] main() started
+[DEBUG] In try block, loading config...
+[DEBUG] Strategy flags set, loading pipeline configs...
+[DEBUG] Pipeline configs loaded
+[DEBUG] Checking IS_CLIENT env var...
+[DEBUG] IS_CLIENT=1, entering client mode...
+[DEBUG] Getting MACHINE_ID...
+[DEBUG] MACHINE_ID=0
+[DEBUG] Allocating latency array...
+[DEBUG] Latency array allocated, creating latch...
+[DEBUG] Allocating lock_counts array...
+[DEBUG] lock_counts allocated, initializing...
+[DEBUG] lock_counts initialized
+[DEBUG] Creating 8 worker threads...
+[DEBUG] Creating worker thread 0...
+[DEBUG] Creating worker thread 1...
+[DEBUG] Worker [DEBUG] Creating worker thread 2...
+0 started
+[DEBUG] Worker 1 started
+[DEBUG] Creating worker thread 3...
+[DEBUG] Worker 0 pinned to CPU
+[DEBUG] Worker [DEBUG] Worker [DEBUG] Worker [DEBUG] Creating worker thread 4...2 started
+
+0 allocating Client...
+1 pinned to CPU
+[DEBUG] Worker 1 allocating Client...
+[DEBUG] Worker 2 pinned to CPU
+[DEBUG] Worker 2 allocating Client...[DEBUG] Worker 3 started
+
+[DEBUG] Worker 1 Client allocated
+[DEBUG] Worker [DEBUG] Creating worker thread 5...
+1 connecting...
+[DEBUG] Worker [DEBUG] Worker 4 started
+3 pinned to CPU
+[DEBUG] Worker 3 allocating Client...
+[DEBUG] Worker 2 Client allocated
+[DEBUG] Worker 4[DEBUG] Worker 0 Client allocated
+[DEBUG] Worker 0 pinned to CPU
+[DEBUG] Worker 2 connecting...
+[DEBUG] Worker 4 allocating Client...
+ connecting...
+[DEBUG] Worker 4 Client allocated
+[DEBUG] Worker 4 connecting...
+[DEBUG] Worker 3 Client allocated
+[DEBUG] Worker 3 connecting...
+[DEBUG] Creating worker thread 6...
+[DEBUG] Worker 5 started
+[DEBUG] Creating worker thread 7...
+[DEBUG] Worker 5 pinned to CPU
+[DEBUG] Worker [DEBUG] Worker 7 started
+5 allocating Client...[DEBUG] Worker 6 started
+
+[DEBUG] Worker 7 pinned to CPU
+[DEBUG] Worker 7 allocating Client...
+[DEBUG] Worker 6 pinned to CPU
+[DEBUG] Worker 6 allocating Client...
+[DEBUG] Worker 7 Client allocated
+[DEBUG] Worker 7 connecting...
+[DEBUG] Worker [DEBUG] Worker 5 Client allocated
+[DEBUG] Worker 5 connecting...
+6 Client allocated
+[DEBUG] Worker 6 connecting...
+[Client 1] Connecting to 192.168.1.1...
+[Client 2] Connecting to 192.168.1.1...
+[Client 4] Connecting to 192.168.1.1...
+[Client 0] Connecting to 192.168.1.1...
+[Client 3] Connecting to 192.168.1.1...
+[Client 7] Connecting to 192.168.1.1...
+[Client 5] Connecting to 192.168.1.1...
+[Client 6] Connecting to 192.168.1.1...
+[Client 4] Connected to node 0
+[Client 4] Connecting to 192.168.1.2...
+[Client 2] Connected to node 0
+[Client 2] Connecting to 192.168.1.2...
+[Client 0] Connected to node 0
+[Client 0] Connecting to 192.168.1.2...
+[Client 4] Connected to node 1
+[Client 4] Connecting to 192.168.1.3...
+[Client 5] Connected to node 0
+[Client 5] Connecting to 192.168.1.2...
+[Client 2] Connected to node 1
+[Client 2] Connecting to 192.168.1.3...
+[Client 0] Connected to node 1
+[Client 0] Connecting to 192.168.1.3...
+[Client 6] Connected to node 0
+[Client 6] Connecting to 192.168.1.2...
+[Client 4] Connected to node 2
+[Client 4] Connecting to 192.168.1.4...
+[Client 5] Connected to node 1
+[Client 5] Connecting to 192.168.1.3...
+[Client 7] Connected to node 0
+[Client 7] Connecting to 192.168.1.2...
+[Client 2] Connected to node 2
+[Client 2] Connecting to 192.168.1.4...
+[Client 1] Connected to node 0
+[Client 1] Connecting to 192.168.1.2...
+[Client 6] Connected to node 1
+[Client 6] Connecting to 192.168.1.3...
+[Client 0] Connected to node 2
+[Client 0] Connecting to 192.168.1.4...
+[Client 3] Connected to node 0
+[Client 3] Connecting to 192.168.1.2...
+[Client 7] Connected to node 1
+[Client 7] Connecting to 192.168.1.3...
+[Client 5] Connected to node 2
+[Client 5] Connecting to 192.168.1.4...
+[Client 4] Connected to node 3
+[Client 4] Connecting to 192.168.1.5...
+[Client 1] Connected to node 1
+[Client 1] Connecting to 192.168.1.3...
+[Client 6] Connected to node 2
+[Client 6] Connecting to 192.168.1.4...
+[Client 2] Connected to node 3
+[Client 2] Connecting to 192.168.1.5...
+[Client 3] Connected to node 1
+[Client 3] Connecting to 192.168.1.3...
+[Client 7] Connected to node 2
+[Client 7] Connecting to 192.168.1.4...
+[Client 0] Connected to node 3
+[Client 0] Connecting to 192.168.1.5...
+[Client 4] Connected to node 4
+[Client 4] All 5 node connections established
+[DEBUG] Worker 4 connected, waiting for establishment...
+[Client 1] Connected to node 2
+[Client 1] Connecting to 192.168.1.4...
+[Client 5] Connected to node 3
+[Client 5] Connecting to 192.168.1.5...
+[Client 3] Connected to node 2
+[Client 3] Connecting to 192.168.1.4...
+[Client 2] Connected to node 4
+[Client 2] All 5 node connections established
+[DEBUG] Worker 2 connected, waiting for establishment...
+[Client 6] Connected to node 3
+[Client 6] Connecting to 192.168.1.5...
+[Client 0] Connected to node 4
+[Client 0] All 5 node connections established
+[DEBUG] Worker 0 connected, waiting for establishment...
+[Client 7] Connected to node 3
+[Client 7] Connecting to 192.168.1.5...
+[Client 5] Connected to node 4
+[Client 5] All 5 node connections established
+[DEBUG] Worker 5 connected, waiting for establishment...
+[Client 1] Connected to node 3
+[Client 1] Connecting to 192.168.1.5...
+[Client 6] Connected to node 4
+[Client 6] All 5 node connections established
+[DEBUG] Worker 6 connected, waiting for establishment...
+[Client 3] Connected to node 3
+[Client 3] Connecting to 192.168.1.5...
+[Client 7] Connected to node 4
+[Client 7] All 5 node connections established
+[DEBUG] Worker 7 connected, waiting for establishment...
+[Client 1] Connected to node 4
+[Client 1] All 5 node connections established
+[DEBUG] Worker 1 connected, waiting for establishment...
+[Client 3] Connected to node 4
+[Client 3] All 5 node connections established
+[DEBUG] Worker 3 connected, waiting for establishment...
+[Client 1] Benchmark plan: [Client 5] Benchmark plan: [Client [Client [Client 0[Client [Client 1856250 registrations, [Client 61856250742 registrations, 3] Benchmark plan: 1856250] Benchmark plan: ] Benchmark plan: 18750 notifications
+] Benchmark plan: 1856250 registrations, 18750 notifications
+1856250 registrations, 18750] Benchmark plan: ] Benchmark plan: 1856250 registrations, 18750 notifications
+ registrations, 18750 notifications
+18750 notifications
+ notifications
+18562501856250 registrations, 18750 notifications
+ registrations, 18750 notifications
+[Client 0] FAA op 0 object 676 owner=1 slot=0
+[Client 0] FAA op 0 object 236 owner=1 slot=0
+[Client 0] FAA op 0 object 887 owner=2 slot=0
+[Client 0] FAA op 0 object 792 owner=2 slot=0
+[Client 0] FAA op 0 object 517 owner=2 slot=0
+[Client 0] FAA op 0 object 663 owner=3 slot=1
+[Client 0] FAA op 0 object 820 owner=0 slot=0
+[Client 0] FAA op 0 object 210 owner=0 slot=0
+[Client 0] WRITE_ID complete op 0 object 676 slot 0 responses=4
+[Client 0] WRITE_ID complete op 1 object 236 slot 0 responses=4
+[Client 0] WRITE_ID complete op 2 object 887 slot 0 responses=4
+[Client 0] WRITE_ID complete op 3 object 792 slot 0 responses=4
+[Client 0] WRITE_ID complete op 4 object 517 slot 0 responses=4
+[Client 5] Switching to notification phase at completed=1856250 active=7
+[Client 0] Switching to notification phase at completed=1856250 active=7
+[Client 0] POST_READ_COUNT object 502 owner=2 remote_addr=0x7f0f80662be0 offset=560344032
+[Client 0] POST_READ_COUNT object 471 owner=1 remote_addr=0x7f1a3f1a7af0 offset=555383536
+[Client 0] POST_READ_COUNT object 846 owner=1 remote_addr=0x7f1a42ae1960 offset=615389536
+[Client 0] POST_READ_COUNT object 593 owner=3 remote_addr=0x7fa583e45c90 offset=574905488
+[Client 0] POST_READ_COUNT object 971 owner=1 remote_addr=0x7f1a43df4e30 offset=635391536
+[Client 0] READ_COUNT notify_op 4 object 502 owner=2 count=14837 offset=560344032
+[Client 0] READ_COUNT notify_op 5 object 471 owner=1 count=14840 offset=555383536
+[Client 0] READ_COUNT notify_op 5 object 846 owner=1 count=14750 offset=615389536
+[Client 0] READ_COUNT notify_op 6 object 593 owner=3 count=14831 offset=574905488
+[Client 0] READ_COUNT notify_op 7 object 971 owner=1 count=14794 offset=635391536
+[Client 0] READ_COUNT notify_op 7 object 698 owner=3 count=14722 offset=591707168
+[Client 0] READ_WATCHER_IDS complete notify_op 7 object 502 total_watchers=14837
+[Client 0] POST_NOTIFY_WATCHERS object 502 total_watchers=14837 sending batch [0..1024) (MAX_NOTIFY_BATCH=1024)
+[Client 0] READ_WATCHER_IDS complete notify_op 7 object 471 total_watchers=14840
+[Client 0] POST_NOTIFY_WATCHERS object 471 total_watchers=14840 sending batch [0..1024) (MAX_NOTIFY_BATCH=1024)
+[Client 0] READ_WATCHER_IDS complete notify_op 7 object 846 total_watchers=14750
+[Client 0] POST_NOTIFY_WATCHERS object 846 total_watchers=14750 sending batch [0..1024) (MAX_NOTIFY_BATCH=1024)
+[Client 0] READ_COUNT notify_op 7 object 100 owner=0 count=14812 offset=496017600
+[Client 0] READ_WATCHER_IDS complete notify_op 7 object 593 total_watchers=14831
+[Client 0] POST_NOTIFY_WATCHERS object 593 total_watchers=14831 sending batch [0..1024) (MAX_NOTIFY_BATCH=1024)
+[Client 4] Switching to notification phase at completed=1856250 active=7
+[Client 0] READ_COUNT notify_op 7 object 895 owner=0 count=14665 offset=623230320
+[Client 0] READ_WATCHER_IDS complete notify_op 7 object 971 total_watchers=14794
+[Client 0] POST_NOTIFY_WATCHERS object 971 total_watchers=14794 sending batch [0..1024) (MAX_NOTIFY_BATCH=1024)
+[Client 0] READ_WATCHER_IDS complete notify_op 7 object 698 total_watchers=14722
+[Client 0] POST_NOTIFY_WATCHERS object 698 total_watchers=14722 sending batch [0..1024) (MAX_NOTIFY_BATCH=1024)
+[Client 0] NOTIFY_WATCHER ack 1/1024 for object 502
+[Client 0] NOTIFY_WATCHER ack 2/1024 for object 502
+[Client 0] NOTIFY_WATCHER ack 3/1024 for object 502
+[Client 0] NOTIFY_WATCHER ack 4/1024 for object 502
+[Client 0] NOTIFY_WATCHER ack 5/1024 for object 502
+[Client 0] NOTIFY batch complete, sending next batch (sent 1024/14837)
+[Client 0] POST_NOTIFY_WATCHERS object 502 total_watchers=14837 sending batch [1024..2048) (MAX_NOTIFY_BATCH=1024)
+[Client 0] NOTIFY_WATCHER ack 1/1024 for object 471
+[Client 0] NOTIFY_WATCHER ack 2/1024 for object 471
+[Client 0] NOTIFY_WATCHER ack 3/1024 for object 471
+[Client 0] NOTIFY_WATCHER ack 4/1024 for object 471
+[Client 0] NOTIFY_WATCHER ack 5/1024 for object 471
+[Client 0] NOTIFY batch complete, sending next batch (sent 1024/14840)
+[Client 0] POST_NOTIFY_WATCHERS object 471 total_watchers=14840 sending batch [1024..2048) (MAX_NOTIFY_BATCH=1024)
+[Client 0] NOTIFY_WATCHER ack 1/1024 for object 846
+[Client 0] NOTIFY_WATCHER ack 2/1024 for object 846
+[Client 0] NOTIFY_WATCHER ack 3/1024 for object 846
+[Client 0] NOTIFY_WATCHER ack 4/1024 for object 846
+[Client 0] NOTIFY_WATCHER ack 5/1024 for object 846
+[Client 3] Switching to notification phase at completed=1856250 active=7
+[Client 0] NOTIFY batch complete, sending next batch (sent 1024/14750)
+[Client 0] POST_NOTIFY_WATCHERS object 846 total_watchers=14750 sending batch [1024..2048) (MAX_NOTIFY_BATCH=1024)
+[Client 7] Switching to notification phase at completed=1856250 active=7
+[Client 0] READ_WATCHER_IDS complete notify_op 7 object 100 total_watchers=14812
+[Client 0] POST_NOTIFY_WATCHERS object 100 total_watchers=14812 sending batch [0..1024) (MAX_NOTIFY_BATCH=1024)
+[Client 0] NOTIFY_WATCHER ack 1/1024 for object 593
+[Client 0] NOTIFY_WATCHER ack 2/1024 for object 593
+[Client 0] NOTIFY_WATCHER ack 3/1024 for object 593
+[Client 0] NOTIFY_WATCHER ack 4/1024 for object 593
+[Client 0] NOTIFY_WATCHER ack 5/1024 for object 593
+[Client 0] NOTIFY batch complete, sending next batch (sent 1024/14831)
+[Client 0] READ_WATCHER_IDS complete notify_op 7 object 895 total_watchers=14665
+[Client 0] NOTIFY_WATCHER ack 1/1024 for object 971
+[Client 0] NOTIFY_WATCHER ack 2/1024 for object 971
+[Client 0] NOTIFY_WATCHER ack 3/1024 for object 971
+[Client 0] NOTIFY_WATCHER ack 4/1024 for object 971
+[Client 0] NOTIFY_WATCHER ack 5/1024 for object 971
+[Client 0] NOTIFY batch complete, sending next batch (sent 1024/14794)
+[Client 0] NOTIFY_WATCHER ack 1/1024 for object 698
+[Client 0] NOTIFY_WATCHER ack 2/1024 for object 698
+[Client 0] NOTIFY_WATCHER ack 3/1024 for object 698
+[Client 0] NOTIFY_WATCHER ack 4/1024 for object 698
+[Client 0] NOTIFY_WATCHER ack 5/1024 for object 698
+[Client 0] NOTIFY batch complete, sending next batch (sent 1024/14722)
+[Client 0] NOTIFY batch complete, sending next batch (sent 2048/14837)
+[Client 1] Switching to notification phase at completed=1856250 active=7
+[Client 0] NOTIFY batch complete, sending next batch (sent 3072/14837)
+[Client 0] NOTIFY batch complete, sending next batch (sent 4096/14837)
+[Client 0] NOTIFY batch complete, sending next batch (sent 5120/14837)
+[Client 0] NOTIFY batch complete, sending next batch (sent 6144/14837)
+[Client 0] NOTIFY batch complete, sending next batch (sent 7168/14837)
+[Client 0] NOTIFY batch complete, sending next batch (sent 8192/14837)
+[Client 0] NOTIFY batch complete, sending next batch (sent 9216/14837)
+[Client 2] Switching to notification phase at completed=1856250 active=7
+[Client 0] NOTIFY batch complete, sending next batch (sent 10240/14837)
+[Client 0] NOTIFY batch complete, sending next batch (sent 11264/14837)
+[Client 0] NOTIFY batch complete, sending next batch (sent 12288/14837)
+[Client 0] NOTIFY batch complete, sending next batch (sent 13312/14837)
+[Client 0 error] watch pipeline: notify watcher post failed (posted 942/1024 in this batch)
+[Client 0] NOTIFY batch complete, sending next batch (sent 14254/14837)
+[Client 0 error] watch pipeline: notify watcher post failed (posted 2/583 in this batch)
+[Client 0] NOTIFY batch complete, sending next batch (sent 14256/14837)
+[Client 0 error] watch pipeline: notify watcher post failed (posted 2/581 in this batch)
+[Client 0] NOTIFY batch complete, sending next batch (sent 14258/14837)
+[Client 0 error] watch pipeline: notify watcher post failed (posted 0/579 in this batch)
+[Client 0] NOTIFY complete notify_op 7 object 502 sent 14837 notifications (total_watchers=14837)
+[Client 6] Switching to notification phase at completed=1856250 active=7
+[Client 0 error] watch pipeline: read count post failed
+[Client 5 error] watch pipeline: notify watcher post failed (posted 937/1024 in this batch)
+[Client 5 error] watch pipeline: notify watcher post failed (posted 2/552 in this batch)
+[Client 5 error] watch pipeline: notify watcher post failed (posted 0/550 in this batch)
+[Client 7 error] watch pipeline: notify watcher post failed (posted 942/1024 in this batch)
+[Client 7 error] watch pipeline: notify watcher post failed (posted 0/400 in this batch)
+[Client 5 error] watch pipeline: read count post failed
+[Client 4 error] watch pipeline: notify watcher post failed (posted 940/1024 in this batch)
+[Client 4 error] watch pipeline: notify watcher post failed (posted 0/503 in this batch)
+[Client 7 error] watch pipeline: read count post failed
+[Client 3 error] watch pipeline: notify watcher post failed (posted 943/1024 in this batch)
+[Client 3 error] watch pipeline: notify watcher post failed (posted 0/668 in this batch)
+[Client 3 error] watch pipeline: notify watcher post failed (posted 0/1024 in this batch)
+[Client 3 error] watch pipeline: read count post failed
+[Client 2 error] watch pipeline: notify watcher post failed (posted 946/1024 in this batch)
+[Client 2 error] watch pipeline: notify watcher post failed (posted 0/721 in this batch)
+[Client 6 error] watch pipeline: notify watcher post failed (posted 943/1024 in this batch)
+[Client 6 error] watch pipeline: notify watcher post failed (posted 0/743 in this batch)
+[Client 2 error] watch pipeline: notify watcher post failed (posted 0/1024 in this batch)
+[Client 4 error] watch pipeline: notify watcher post failed (posted 2/1024 in this batch)
+[Client 4 error] watch pipeline: notify watcher post failed (posted 0/1024 in this batch)
+[Client 1 error] watch pipeline: notify watcher post failed (posted 947/1024 in this batch)
+[Client 1 error] watch pipeline: notify watcher post failed (posted 0/765 in this batch)
+[Client 1 error] watch pipeline: notify watcher post failed (posted 0/1024 in this batch)
+[Client 6 error] watch pipeline: read count post failed
+[Client 2 error] watch pipeline: read count post failed
+[Client 4 error] watch pipeline: read count post failed
+[Client 1 error] watch pipeline: read count post failed
+
+==================================================
+ RDMA LOCK BENCHMARK RESULTS
+==================================================
+Strategy:                watch
+Locks:                    1000
+Active Window:               8
+Zipf Skew:                0.00
+Owner Mode:            sharded
+Clients:                     8 (8 on this machine)
+Ops/Client:            1875000
+Total Ops:            15000000
+--------------------------------------------------
+Wall Clock:              6.142 s
+Goodput:               2442227 ops/s
+--------------------------------------------------
+ACQUIRE LATENCY (us)
+Mean:                    25.82
+StdDev:                  30.43
+P0  (Min):                0.00
+P50 (Med):               26.00
+P90:                     29.25
+P99:                     32.89
+P99.9:                   38.28
+P100 (Max):           46950.10
+==================================================
+
+CSV: watch,0,8,1000,8,0.00,15000000,6.142,2442227,25.82,26.00,29.25,32.89,38.28,46950.10
+HDR: strategy,client_machine_id,clients,locks,active_window,zipf_skew,total_ops,wall_s,goodput,mean_us,p50_us,p90_us,p99_us,p99.9_us,max_us

@@ -10,6 +10,8 @@
 enum class MuRpcOp : uint8_t {
     Lock = 1,
     Unlock = 2,
+    WatchRegister = 3,    // Register as watcher (returns watcher slot)
+    WatchNotify = 4,      // Notify all watchers (E2E operation)
 };
 
 enum class MuRpcStatus : uint8_t {
