@@ -96,35 +96,20 @@ int main() {
                                 const size_t num_go = (is_mu || is_mu_watch) ? 1 : CLUSTER_NODES.size();
                                 auto* cq = client->cq();
 
-                                std::cerr << "[DEBUG Client " << i << "] Waiting for " << num_go << " GO signals..." << std::endl;
-
                                 size_t got = 0;
-                                uint64_t poll_attempts = 0;
                                 while (got < num_go) {
                                     ibv_wc wc{};
                                     int n = ibv_poll_cq(cq, 1, &wc);
-                                    poll_attempts++;
-
-                                    if (poll_attempts % 100000000 == 0) {
-                                        std::cerr << "[DEBUG Client " << i << "] Still waiting... poll_attempts=" << poll_attempts << " got=" << got << std::endl;
-                                    }
 
                                     if (n > 0) {
-                                        std::cerr << "[DEBUG Client " << i << "] Got completion: status=" << wc.status << " opcode=" << wc.opcode << " wr_id=0x" << std::hex << wc.wr_id << std::dec << std::endl;
-
                                         if (wc.status == IBV_WC_SUCCESS && (wc.opcode & IBV_WC_RECV)) {
                                             got++;
-                                            std::cerr << "[DEBUG Client " << i << "] GO signal received! got=" << got << "/" << num_go << std::endl;
                                         }
                                     }
                                 }
-
-                                std::cerr << "[DEBUG Client " << i << "] All GO signals received, proceeding..." << std::endl;
                             }
 
-                            std::cerr << "[DEBUG Client " << i << "] Arriving at latch..." << std::endl;
                             start_latch.arrive_and_wait();
-                            std::cerr << "[DEBUG Client " << i << "] Passed latch, starting benchmark..." << std::endl;
 
                             // Watch strategies have extra notification ops, so use larger stride
                             const size_t per_client_stride = (is_watch || is_mu_watch)
@@ -169,7 +154,6 @@ int main() {
                                     (*lock_counts)[global_id].data(),
                                     simple_watch_config);
                             } else if (is_mu_watch) {
-                                std::cerr << "[DEBUG Client " << i << "] Calling run_mu_watch_pipeline..." << std::endl;
                                 run_mu_watch_pipeline(
                                     *client,
                                     latencies,
