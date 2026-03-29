@@ -641,6 +641,29 @@ void run_watch_pipeline(
         }
     }
 
+    // Print phase-specific throughput to stdout
+    if (registration_timing_done && notification_timing_started) {
+        const double reg_wall_s = std::chrono::duration_cast<std::chrono::microseconds>(
+            registration_end_time - registration_start_time).count() / 1'000'000.0;
+        const double notif_wall_s = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - notification_start_time).count() / 1'000'000.0;
+        const double reg_throughput = registration_ops / reg_wall_s;
+        const double notif_throughput = notification_ops / notif_wall_s;
+
+        std::cout << "\n========================================\n";
+        std::cout << " PHASE THROUGHPUT\n";
+        std::cout << "========================================\n";
+        std::cout << "REGISTRATION PHASE:\n";
+        std::cout << "  Ops: " << registration_ops << "\n";
+        std::cout << "  Wall Clock: " << std::fixed << std::setprecision(6) << reg_wall_s << " s\n";
+        std::cout << "  Throughput: " << static_cast<uint64_t>(reg_throughput) << " ops/s\n";
+        std::cout << "\nNOTIFICATION PHASE:\n";
+        std::cout << "  Ops: " << notification_ops << "\n";
+        std::cout << "  Wall Clock: " << notif_wall_s << " s\n";
+        std::cout << "  Throughput: " << static_cast<uint64_t>(notif_throughput) << " ops/s\n";
+        std::cout << "========================================\n" << std::flush;
+    }
+
     // VERIFICATION START - ENSURE THIS PRINTS
     std::cerr << "\n[VERIFICATION-START] Client " << client.id() << " reached end of benchmark\n" << std::flush;
 

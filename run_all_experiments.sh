@@ -100,7 +100,8 @@ for exp in "${EXPERIMENTS[@]}"; do
     echo "✓ Servers started"
 
     # Run client on apt121 (dedicated client node)
-    ssh stevie98@apt121.apt.emulab.net "cd /local/rdma/build && sudo IS_CLIENT=1 MACHINE_ID=0 timeout 300 ./rdma 2>&1" > "/tmp/exp_${NUM_OPS}.log"
+    TIMESTAMP=$(date +"%Y_%m_%d_%H_%M_%S")
+    ssh stevie98@apt121.apt.emulab.net "cd /local/rdma/build && sudo IS_CLIENT=1 MACHINE_ID=0 timeout 300 ./rdma 2>&1" > "/tmp/${TIMESTAMP}_${NUM_OPS}.txt"
 
     echo ""
     echo "========================================="
@@ -108,10 +109,10 @@ for exp in "${EXPERIMENTS[@]}"; do
     echo "========================================="
     echo ""
     echo "--- Phase Throughput & Latency ---"
-    grep -A 20 "PHASE THROUGHPUT" "/tmp/exp_${NUM_OPS}.log" | head -25
+    grep -A 20 "PHASE THROUGHPUT" "/tmp/${TIMESTAMP}_${NUM_OPS}.txt" | head -25
     echo ""
     echo "--- Overall Benchmark Summary ---"
-    grep -A 20 "RDMA LOCK BENCHMARK RESULTS" "/tmp/exp_${NUM_OPS}.log" | head -25
+    grep -A 20 "RDMA LOCK BENCHMARK RESULTS" "/tmp/${TIMESTAMP}_${NUM_OPS}.txt" | head -25
     echo ""
 
 done
