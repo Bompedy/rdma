@@ -40,7 +40,7 @@ for exp in "${EXPERIMENTS[@]}"; do
     # Rebuild all nodes in parallel (servers + client)
     echo "Rebuilding all nodes..."
     for host in apt128 apt132 apt095 apt104 apt112 apt121; do
-        ssh stevie98@${host}.apt.emulab.net "cd /local/rdma && git checkout yingjianw/wip && git pull origin yingjianw/wip && cd build && make -j" > "/tmp/build_${host}.log" 2>&1 &
+        ssh stevie98@${host}.apt.emulab.net "cd /local/rdma && git checkout yingjianw/wip && git pull --rebase origin yingjianw/wip && cd build && make -j" > "/tmp/build_${host}.log" 2>&1 &
     done
     wait  # Wait for all rebuilds to complete
 
