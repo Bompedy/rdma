@@ -972,7 +972,11 @@ void handle_recv_cqe(MuLeaderRuntime& rt, const ibv_wc& comp) {
         return;
     }
 
-    if (req.lock_id < rt.lock_start || req.lock_id >= rt.lock_end) {
+    // Skip lock_id range validation for Watch operations - they use global object space
+    const bool is_watch_op = (req.op == static_cast<uint8_t>(MuRpcOp::WatchRegister) ||
+                              req.op == static_cast<uint8_t>(MuRpcOp::WatchNotify));
+
+    if (!is_watch_op && (req.lock_id < rt.lock_start || req.lock_id >= rt.lock_end)) {
         MuResponse resp{};
         resp.op = req.op;
         resp.status = static_cast<uint8_t>(MuRpcStatus::InternalError);
