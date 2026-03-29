@@ -175,7 +175,11 @@ int main() {
                             std::cerr << "[DEBUG Client " << i << "] Passed latch, starting benchmark..." << std::endl;
                             std::cerr.flush();
 
-                            uint64_t* latencies = &((*all_latencies)[i * NUM_OPS_PER_CLIENT]);
+                            // Watch strategies have extra notification ops, so use larger stride
+                            const size_t per_client_stride = (is_watch || is_mu_watch)
+                                ? (NUM_OPS_PER_CLIENT + (2000 / TOTAL_CLIENTS))
+                                : NUM_OPS_PER_CLIENT;
+                            uint64_t* latencies = &((*all_latencies)[i * per_client_stride]);
 
                             if (is_cas) {
                                 run_cas_pipeline(
