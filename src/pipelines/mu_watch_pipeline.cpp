@@ -131,8 +131,7 @@ void post_request(
     const MuWatchOpCtx& op,
     const MuRequest& request,
     uint32_t& signal_count,
-    const uint32_t signal_every,
-    const bool force_signal = false
+    const uint32_t signal_every
 ) {
     auto& leader = client.connections().front();
 
@@ -147,7 +146,7 @@ void post_request(
     wr.sg_list = &sge;
     wr.num_sge = 1;
     wr.send_flags = IBV_SEND_INLINE;
-    if (force_signal || (++signal_count % std::max(signal_every, 1u) == 0)) {
+    if (++signal_count % std::max(signal_every, 1u) == 0) {
         wr.send_flags |= IBV_SEND_SIGNALED;
     }
 
@@ -240,7 +239,7 @@ void run_mu_watch_pipeline(
     uint32_t signal_count = 0;
     const uint32_t signal_every = config.client_send_signal_every;
 
-    auto submit_op = [&](const size_t slot, const bool force_signal = false) {
+    auto submit_op = [&](const size_t slot) {
         auto& op = ops[slot];
         op.active = true;
         op.generation++;
@@ -270,16 +269,16 @@ void run_mu_watch_pipeline(
             req.op = static_cast<uint8_t>(MuRpcOp::WatchNotify);
         }
 
-        post_request(client, op, req, signal_count, signal_every, force_signal);
+        post_request(client, op, req, signal_count, signal_every);
         submitted++;
         active++;
     };
 
-    // Fill the client-side active window before entering the recv-driven CQ loop.
-    // Force signal all initial requests so we can drain SEND completions.
+    // Fill the client-side active window before entering the recv-driven CQ loop
+    // (exact primitives mu_pipeline pattern).
     const size_t total_ops = registration_ops + notification_ops;
     while (active < config.active_window && submitted < total_ops) {
-        submit_op(active, true);  // force_signal=true
+        submit_op(active);
     }
 
     // Main completion loop
