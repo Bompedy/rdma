@@ -131,7 +131,8 @@ void post_request(
     const MuWatchOpCtx& op,
     const MuRequest& request,
     uint32_t& signal_count,
-    const uint32_t signal_every
+    const uint32_t signal_every,
+    const bool force_signal = false
 ) {
     auto& leader = client.connections().front();
 
@@ -146,7 +147,7 @@ void post_request(
     wr.sg_list = &sge;
     wr.num_sge = 1;
     wr.send_flags = IBV_SEND_INLINE;
-    if (++signal_count % std::max(signal_every, 1u) == 0) {
+    if (force_signal || (++signal_count % std::max(signal_every, 1u) == 0)) {
         wr.send_flags |= IBV_SEND_SIGNALED;
     }
 
@@ -239,7 +240,7 @@ void run_mu_watch_pipeline(
     uint32_t signal_count = 0;
     const uint32_t signal_every = config.client_send_signal_every;
 
-    auto submit_op = [&](const size_t slot) {
+    auto submit_op = [&](const size_t slot, const bool force_signal = false) {
         auto& op = ops[slot];
         op.active = true;
         op.generation++;
@@ -269,41 +270,17 @@ void run_mu_watch_pipeline(
             req.op = static_cast<uint8_t>(MuRpcOp::WatchNotify);
         }
 
-        post_request(client, op, req, signal_count, signal_every);
+        post_request(client, op, req, signal_count, signal_every, force_signal);
         submitted++;
         active++;
     };
 
-    // Fill pipeline
+    // Fill the client-side active window before entering the recv-driven CQ loop.
+    // Force signal all initial requests so we can drain SEND completions.
     const size_t total_ops = registration_ops + notification_ops;
-
-    std::cerr << "[Client " << client.id() << "] Starting initial submission: total_ops=" << total_ops
-              << " active_window=" << config.active_window << std::endl;
-
-    // Submit initial window, but poll for SEND completions to avoid filling the send queue
-    size_t loop_iterations = 0;
     while (active < config.active_window && submitted < total_ops) {
-        loop_iterations++;
-
-        if (loop_iterations % 1000000 == 0) {
-            std::cerr << "[Client " << client.id() << "] LOOP STUCK? iterations=" << loop_iterations
-                      << " active=" << active << " submitted=" << submitted << std::endl;
-        }
-
-        // Try to submit
-        std::cerr << "[Client " << client.id() << "] About to submit_op(" << active << ")" << std::endl;
-        submit_op(active);
-        std::cerr << "[Client " << client.id() << "] After submit_op: active=" << active << " submitted=" << submitted << std::endl;
-
-        // Poll for SEND completions to free up send queue space
-        const int polled = ibv_poll_cq(client.cq(), static_cast<int>(completions.size()), completions.data());
-        if (polled > 0) {
-            std::cerr << "[Client " << client.id() << "] During init: polled " << polled << " SEND completions" << std::endl;
-        }
+        submit_op(active, true);  // force_signal=true
     }
-
-    std::cerr << "[Client " << client.id() << "] Initial submission done: submitted=" << submitted
-              << " active=" << active << " entering polling loop..." << std::endl;
 
     // Main completion loop
     uint64_t poll_count = 0;

@@ -28,11 +28,7 @@
 constexpr const char* STRATEGY = "mu_watch";
 
 int main() {
-    std::cerr << "[DEBUG] main() started" << std::endl;
-    std::cerr.flush();
     try {
-        std::cerr << "[DEBUG] In try block, loading config..." << std::endl;
-        std::cerr.flush();
         // Each pipeline exposes a config struct plus a client buffer-size helper.
         // New pipelines should follow that pattern so main stays uniform.
         const bool is_mu  = (std::string(STRATEGY) == "mu");
@@ -42,8 +38,6 @@ int main() {
         const bool is_watch = (std::string(STRATEGY) == "watch");
         const bool is_simple_watch = (std::string(STRATEGY) == "simple_watch");
         const bool is_mu_watch = (std::string(STRATEGY) == "mu_watch");
-        std::cerr << "[DEBUG] Strategy flags set, loading pipeline configs..." << std::endl;
-        std::cerr.flush();
         const CasPipelineConfig cas_config = is_cas ? load_cas_pipeline_config() : CasPipelineConfig{};
         const SimpleCasPipelineConfig simple_cas_config =
             is_simple_cas ? load_simple_cas_pipeline_config() : SimpleCasPipelineConfig{};
@@ -54,47 +48,23 @@ int main() {
         const SimpleWatchPipelineConfig simple_watch_config =
             is_simple_watch ? load_simple_watch_pipeline_config() : SimpleWatchPipelineConfig{};
         const MuWatchPipelineConfig mu_watch_config = is_mu_watch ? load_mu_watch_pipeline_config() : MuWatchPipelineConfig{};
-        std::cerr << "[DEBUG] Pipeline configs loaded" << std::endl;
-        std::cerr.flush();
 
         // Client mode runs worker threads for the selected pipeline. Server mode
         // below launches either the MU leader/follower path or generic nodes.
-        std::cerr << "[DEBUG] Checking IS_CLIENT env var..." << std::endl;
-        std::cerr.flush();
         if (get_uint_env("IS_CLIENT") != 0) {
-            std::cerr << "[DEBUG] IS_CLIENT=1, entering client mode..." << std::endl;
-            std::cerr.flush();
-            std::cerr << "[DEBUG] Getting MACHINE_ID..." << std::endl;
-            std::cerr.flush();
             const uint32_t machine_id = get_uint_env("MACHINE_ID");
-            std::cerr << "[DEBUG] MACHINE_ID=" << machine_id << std::endl;
-            std::cerr.flush();
 
-            std::cerr << "[DEBUG] Allocating latency array..." << std::endl;
-            std::cerr.flush();
             auto all_latencies = std::make_unique<std::array<uint64_t, MAX_TOTAL_OPS>>();
-            std::cerr << "[DEBUG] Latency array allocated, creating latch..." << std::endl;
-            std::cerr.flush();
             std::latch start_latch(NUM_CLIENTS_PER_MACHINE + 1);
             std::vector<std::thread> workers;
 
-            std::cerr << "[DEBUG] Allocating lock_counts array..." << std::endl;
-            std::cerr.flush();
             auto lock_counts = std::make_unique<
                 std::array<std::array<uint64_t, MAX_LOCKS>, TOTAL_CLIENTS>>();
-            std::cerr << "[DEBUG] lock_counts allocated, initializing..." << std::endl;
-            std::cerr.flush();
             for (auto& client_counts : *lock_counts) client_counts.fill(0);
-            std::cerr << "[DEBUG] lock_counts initialized" << std::endl;
-            std::cerr.flush();
 
             std::atomic<Client*> verify_client{nullptr};
 
-            std::cerr << "[DEBUG] Creating " << NUM_CLIENTS_PER_MACHINE << " worker threads..." << std::endl;
-            std::cerr.flush();
             for (uint32_t i = 0; i < NUM_CLIENTS_PER_MACHINE; ++i) {
-                std::cerr << "[DEBUG] Creating worker thread " << i << "..." << std::endl;
-                std::cerr.flush();
                 const uint32_t global_id = machine_id * NUM_CLIENTS_PER_MACHINE + i;
 
                 workers.emplace_back(
@@ -102,14 +72,8 @@ int main() {
                      &start_latch, &all_latencies, &lock_counts, &verify_client,
                      &cas_config, &simple_cas_config, &ticket_faa_config, &mu_config, &watch_config, &simple_watch_config, &mu_watch_config]() {
                         try {
-                            std::cerr << "[DEBUG] Worker " << i << " started" << std::endl;
-                            std::cerr.flush();
                             pin_thread_to_cpu(pick_cpu_for_client(i));
-                            std::cerr << "[DEBUG] Worker " << i << " pinned to CPU" << std::endl;
-                            std::cerr.flush();
 
-                            std::cerr << "[DEBUG] Worker " << i << " allocating Client..." << std::endl;
-                            std::cerr.flush();
                             auto client = std::make_unique<Client>(
                                 global_id,
                                 is_cas ? cas_pipeline_client_buffer_size(cas_config)
@@ -120,26 +84,19 @@ int main() {
                                                                                                : (is_simple_watch ? simple_watch_pipeline_client_buffer_size(simple_watch_config)
                                                                                                                   : (is_mu_watch ? mu_watch_pipeline_client_buffer_size(mu_watch_config)
                                                                                                                                  : CLIENT_ALIGNED_SIZE)))))));
-                            std::cerr << "[DEBUG] Worker " << i << " Client allocated" << std::endl;
-                            std::cerr.flush();
 
-                            std::cerr << "[DEBUG] Worker " << i << " connecting..." << std::endl;
-                            std::cerr.flush();
                             if (is_mu || is_mu_watch) {
                                 std::vector leader_only = {CLUSTER_NODES[0]};
                                 client->connect(leader_only, RDMA_PORT);
                             } else {
                                 client->connect(CLUSTER_NODES, RDMA_PORT);
                             }
-                            std::cerr << "[DEBUG] Worker " << i << " connected, waiting for establishment..." << std::endl;
-                            std::cerr.flush();
 
                             {
                                 const size_t num_go = (is_mu || is_mu_watch) ? 1 : CLUSTER_NODES.size();
                                 auto* cq = client->cq();
 
                                 std::cerr << "[DEBUG Client " << i << "] Waiting for " << num_go << " GO signals..." << std::endl;
-                                std::cerr.flush();
 
                                 size_t got = 0;
                                 uint64_t poll_attempts = 0;
@@ -150,30 +107,24 @@ int main() {
 
                                     if (poll_attempts % 100000000 == 0) {
                                         std::cerr << "[DEBUG Client " << i << "] Still waiting... poll_attempts=" << poll_attempts << " got=" << got << std::endl;
-                                        std::cerr.flush();
                                     }
 
                                     if (n > 0) {
                                         std::cerr << "[DEBUG Client " << i << "] Got completion: status=" << wc.status << " opcode=" << wc.opcode << " wr_id=0x" << std::hex << wc.wr_id << std::dec << std::endl;
-                                        std::cerr.flush();
 
                                         if (wc.status == IBV_WC_SUCCESS && (wc.opcode & IBV_WC_RECV)) {
                                             got++;
                                             std::cerr << "[DEBUG Client " << i << "] GO signal received! got=" << got << "/" << num_go << std::endl;
-                                            std::cerr.flush();
                                         }
                                     }
                                 }
 
                                 std::cerr << "[DEBUG Client " << i << "] All GO signals received, proceeding..." << std::endl;
-                                std::cerr.flush();
                             }
 
                             std::cerr << "[DEBUG Client " << i << "] Arriving at latch..." << std::endl;
-                            std::cerr.flush();
                             start_latch.arrive_and_wait();
                             std::cerr << "[DEBUG Client " << i << "] Passed latch, starting benchmark..." << std::endl;
-                            std::cerr.flush();
 
                             // Watch strategies have extra notification ops, so use larger stride
                             const size_t per_client_stride = (is_watch || is_mu_watch)
@@ -219,7 +170,6 @@ int main() {
                                     simple_watch_config);
                             } else if (is_mu_watch) {
                                 std::cerr << "[DEBUG Client " << i << "] Calling run_mu_watch_pipeline..." << std::endl;
-                                std::cerr.flush();
                                 run_mu_watch_pipeline(
                                     *client,
                                     latencies,
@@ -450,40 +400,20 @@ int main() {
                       << std::endl;
 
         } else {
-            std::cerr << "[DEBUG] Server mode, getting NODE_ID..." << std::endl;
-            std::cerr.flush();
             const uint32_t node_id = get_uint_env("NODE_ID");
-            std::cerr << "[DEBUG] NODE_ID=" << node_id << std::endl;
-            std::cerr.flush();
 
             if (is_mu || is_mu_watch) {
-                std::cerr << "[DEBUG] MU mode, pinning to CPU 0..." << std::endl;
-                std::cerr.flush();
                 pin_thread_to_cpu(0);
                 if (node_id == 0) {
-                    std::cerr << "[DEBUG] Creating MuLeader..." << std::endl;
-                    std::cerr.flush();
                     MuLeader leader(node_id, 0, MAX_LOCKS);
-                    std::cerr << "[DEBUG] MuLeader created, starting..." << std::endl;
-                    std::cerr.flush();
                     leader.start(RDMA_PORT);
                 } else {
-                    std::cerr << "[DEBUG] Creating MuFollower..." << std::endl;
-                    std::cerr.flush();
                     MuFollower follower(node_id, 0, MAX_LOCKS);
-                    std::cerr << "[DEBUG] MuFollower created, starting..." << std::endl;
-                    std::cerr.flush();
                     follower.start(RDMA_PORT);
                 }
             } else {
-                std::cerr << "[DEBUG] Regular mode, pinning to CPU 1..." << std::endl;
-                std::cerr.flush();
                 pin_thread_to_cpu(1);
-                std::cerr << "[DEBUG] Creating SynraNode..." << std::endl;
-                std::cerr.flush();
                 SynraNode node(node_id);
-                std::cerr << "[DEBUG] SynraNode created, starting..." << std::endl;
-                std::cerr.flush();
                 node.start(RDMA_PORT);
             }
         }
