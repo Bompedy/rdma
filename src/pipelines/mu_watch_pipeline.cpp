@@ -277,10 +277,21 @@ void run_mu_watch_pipeline(
     // Fill pipeline
     const size_t total_ops = registration_ops + notification_ops;
 
+    std::cerr << "[Client " << client.id() << "] Starting initial submission: total_ops=" << total_ops
+              << " active_window=" << config.active_window << std::endl;
+
     while (active < config.active_window && submitted < total_ops) {
+        if (submitted < 10) {
+            std::cerr << "[Client " << client.id() << "] Submitting op " << submitted << std::endl;
+        }
         submit_op(active);
+        if (submitted < 10) {
+            std::cerr << "[Client " << client.id() << "] Submitted op " << submitted << " successfully" << std::endl;
+        }
     }
 
+    std::cerr << "[Client " << client.id() << "] Initial submission done: submitted=" << submitted
+              << " active=" << active << " entering polling loop..." << std::endl;
 
     // Main completion loop
     uint64_t poll_count = 0;
