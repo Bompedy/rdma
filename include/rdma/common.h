@@ -102,9 +102,9 @@ constexpr uint32_t TICKET_FAA_TURN_SPIN_FAR = 0;
 // ─── MU config ───
 // Global append-only mutation log with in-memory per-lock state on the leader.
 
-constexpr size_t MU_ACTIVE_WINDOW = 8;
+constexpr size_t MU_ACTIVE_WINDOW = 64;
 constexpr size_t MU_CQ_BATCH = 32;
-constexpr uint32_t MU_CLIENT_SEND_SIGNAL_EVERY = 4;  // Must be < active_window to avoid send queue deadlock
+constexpr uint32_t MU_CLIENT_SEND_SIGNAL_EVERY = 16;  // Must be < active_window to avoid send queue deadlock
 constexpr uint32_t MU_SERVER_SEND_SIGNAL_EVERY = 4;  // Small value to ensure all ops complete for tiny workloads
 constexpr double MU_ZIPF_SKEW = 0.0;  // Match watch_pipeline: uniform distribution
 constexpr bool MU_DEBUG = false;
