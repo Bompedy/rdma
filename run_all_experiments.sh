@@ -38,10 +38,25 @@ for exp in "${EXPERIMENTS[@]}"; do
     git push
 
     # Rebuild all nodes in parallel (servers + client)
+    echo "Rebuilding all nodes..."
     for host in apt128 apt132 apt095 apt104 apt112 apt121; do
-        ssh stevie98@${host}.apt.emulab.net "cd /local/rdma && git checkout yingjianw/wip && git pull origin yingjianw/wip && cd build && make -j" > /dev/null 2>&1 &
+        ssh stevie98@${host}.apt.emulab.net "cd /local/rdma && git checkout yingjianw/wip && git pull origin yingjianw/wip && cd build && make -j" > "/tmp/build_${host}.log" 2>&1 &
     done
     wait  # Wait for all rebuilds to complete
+
+    # Check if any builds failed
+    build_failed=false
+    for host in apt128 apt132 apt095 apt104 apt112 apt121; do
+        if ! grep -q "Built target rdma" "/tmp/build_${host}.log"; then
+            echo "❌ Build FAILED on ${host}! Check /tmp/build_${host}.log"
+            build_failed=true
+        fi
+    done
+    if [ "$build_failed" = true ]; then
+        echo "Aborting due to build failures"
+        exit 1
+    fi
+    echo "✓ All nodes rebuilt successfully"
 
     # Kill all RDMA processes (servers + client)
     echo "Stopping all RDMA processes..."
