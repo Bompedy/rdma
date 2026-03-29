@@ -291,11 +291,14 @@ void run_mu_watch_pipeline(
         auto now = std::chrono::steady_clock::now();
         auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_progress_time).count();
 
-        if (elapsed_ms > 5000) {
-            if (completed > last_completed) {
-                last_progress_time = now;
-                last_completed = completed;
+        if (elapsed_ms > 3000) {
+            std::cerr << "[Client " << client.id() << "] Progress: completed=" << completed << "/" << total_ops
+                      << " active=" << active << " submitted=" << submitted << " poll_count=" << poll_count << std::endl;
+            last_progress_time = now;
+            if (completed == last_completed) {
+                std::cerr << "[Client " << client.id() << "] WARNING: No progress in 3s!" << std::endl;
             }
+            last_completed = completed;
         }
         const int polled = ibv_poll_cq(client.cq(), static_cast<int>(completions.size()),
                                       completions.data());
@@ -304,6 +307,10 @@ void run_mu_watch_pipeline(
         }
         if (polled == 0) {
             continue;
+        }
+
+        if (completed < 10 || poll_count % 1000000 == 0) {
+            std::cerr << "[Client " << client.id() << "] Polled " << polled << " completions" << std::endl;
         }
 
 
