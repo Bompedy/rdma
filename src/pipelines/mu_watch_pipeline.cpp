@@ -181,8 +181,6 @@ void run_mu_watch_pipeline(
     uint64_t* object_counts,
     const MuWatchPipelineConfig& config
 ) {
-    std::cerr << "[DEBUG] run_mu_watch_pipeline started for client " << client.id() << std::endl;
-    std::cerr.flush();
 
     const auto& conns = client.connections();
     if (conns.empty()) {
@@ -192,8 +190,6 @@ void run_mu_watch_pipeline(
         throw std::runtime_error("MU watch pipeline: active window exceeds wr_id slot encoding");
     }
 
-    std::cerr << "[DEBUG] Client " << client.id() << " posting " << std::max(config.active_window * 2, MU_CLIENT_RECV_RING_MIN) << " receive buffers..." << std::endl;
-    std::cerr.flush();
 
     const size_t recv_ring = std::max(config.active_window * 2, MU_CLIENT_RECV_RING_MIN);
     auto buffers = map_client_buffers(client.buffer(), client.buffer_size(), recv_ring);
@@ -209,8 +205,6 @@ void run_mu_watch_pipeline(
         post_recv(client, &buffers.responses[i], static_cast<uint32_t>(i));
     }
 
-    std::cerr << "[DEBUG] Client " << client.id() << " posted " << recv_ring << " receive buffers, starting benchmark..." << std::endl;
-    std::cerr.flush();
 
     size_t submitted = 0;
     size_t completed = 0;
@@ -265,10 +259,6 @@ void run_mu_watch_pipeline(
             // Registration phase: send WatchRegister
             op.phase = MuWatchPhase::wait_register_ack;
             req.op = static_cast<uint8_t>(MuRpcOp::WatchRegister);
-            if (submitted < 10 || submitted % 1000 == 0) {
-                std::cerr << "[DEBUG] Client " << client.id() << " submitting WatchRegister req_id=" << op.req_id
-                          << " object=" << op.object_id << " slot=" << slot << std::endl;
-            }
         } else {
             // Notification phase: send WatchNotify
             if (!notification_timing_started) {
@@ -277,10 +267,6 @@ void run_mu_watch_pipeline(
             }
             op.phase = MuWatchPhase::wait_notify_ack;
             req.op = static_cast<uint8_t>(MuRpcOp::WatchNotify);
-            if (submitted < registration_ops + 10 || submitted % 100 == 0) {
-                std::cerr << "[DEBUG] Client " << client.id() << " submitting WatchNotify req_id=" << op.req_id
-                          << " object=" << op.object_id << " slot=" << slot << std::endl;
-            }
         }
 
         post_request(client, op, req, signal_count, signal_every);
@@ -295,8 +281,6 @@ void run_mu_watch_pipeline(
         submit_op(active);
     }
 
-    std::cerr << "[DEBUG] Client " << client.id() << " submitted " << submitted << " initial requests, entering completion loop..." << std::endl;
-    std::cerr.flush();
 
     // Main completion loop
     uint64_t poll_count = 0;
@@ -307,20 +291,10 @@ void run_mu_watch_pipeline(
         auto now = std::chrono::steady_clock::now();
         auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_progress_time).count();
 
-        if (poll_count % 10000000 == 0 || elapsed_ms > 1000) {
-            std::cerr << "[DEBUG] Client " << client.id() << " polling... completed=" << completed << "/" << total_ops
-                      << " active=" << active << " submitted=" << submitted
-                      << " poll_count=" << poll_count << " elapsed_ms=" << elapsed_ms << std::endl;
-            std::cerr.flush();
-
+        if (elapsed_ms > 5000) {
             if (completed > last_completed) {
                 last_progress_time = now;
                 last_completed = completed;
-            } else if (elapsed_ms > 5000) {
-                std::cerr << "[WARNING] Client " << client.id() << " no progress for " << elapsed_ms << "ms! Possibly stuck." << std::endl;
-                std::cerr << "  Active ops: " << active << " Submitted: " << submitted << " Completed: " << completed << std::endl;
-                std::cerr.flush();
-                last_progress_time = now;  // Reset to avoid spam
             }
         }
         const int polled = ibv_poll_cq(client.cq(), static_cast<int>(completions.size()),
@@ -332,10 +306,6 @@ void run_mu_watch_pipeline(
             continue;
         }
 
-        if (completed < 5) {
-            std::cerr << "[DEBUG] Client " << client.id() << " got " << polled << " completions" << std::endl;
-            std::cerr.flush();
-        }
 
         for (int i = 0; i < polled; ++i) {
             const ibv_wc& wc = completions[static_cast<size_t>(i)];

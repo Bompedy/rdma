@@ -1210,38 +1210,21 @@ void MuLeader::run() {
         throw std::runtime_error("MuLeader: failed to register recv buffers");
     }
 
-    std::cerr << "[MuLeader " << rt.node_id << "] Posting " << MU_SERVER_RECV_RING << " recv buffers for " << rt.num_clients << " clients..." << std::endl;
     for (uint16_t client_id = 0; client_id < rt.num_clients; ++client_id) {
         for (uint16_t recv_slot = 0; recv_slot < MU_SERVER_RECV_RING; ++recv_slot) {
             post_recv(rt, client_id, recv_slot);
         }
     }
-    std::cerr << "[MuLeader " << rt.node_id << "] Posted " << (rt.num_clients * MU_SERVER_RECV_RING) << " total recv buffers, entering event loop..." << std::endl;
 
     // Main event loop:
     // 1. poll completions,
     // 2. route them to recv/replication handlers,
     // 3. drain the ready-lock queue to append more global-log mutations.
     ibv_wc wc[512];
-    uint64_t debug_poll_count = 0;
-    uint64_t debug_recv_count = 0;
-    uint64_t total_poll_count = 0;
     while (true) {
         const int n = ibv_poll_cq(rt.cq, 512, wc);
-        total_poll_count++;
-        if (total_poll_count % 10000000 == 0) {
-            std::cerr << "[MuLeader " << rt.node_id << "] poll_count=" << total_poll_count
-                      << " free_mutations=" << rt.free_mutations.size()
-                      << " global_commit=" << rt.global_commit_tail << std::endl;
-            std::cerr.flush();
-        }
         if (n < 0) {
             throw std::runtime_error("MuLeader: CQ poll failed");
-        }
-
-        if (n > 0 && debug_poll_count < 100) {
-            std::cerr << "[MuLeader " << rt.node_id << "] DEBUG: Polled " << n << " completions\n";
-            debug_poll_count++;
         }
 
         for (int i = 0; i < n; ++i) {
@@ -1253,11 +1236,6 @@ void MuLeader::run() {
             // Recv completions are client RPCs entering the leader.
             if ((comp.opcode & IBV_WC_RECV) != 0) {
                 if (is_recv_wr_id(comp.wr_id)) {
-                    if (debug_recv_count < 100) {
-                        std::cerr << "[MuLeader " << rt.node_id << "] DEBUG: Handling recv completion from client "
-                                  << recv_client_id(comp.wr_id) << "\n";
-                        debug_recv_count++;
-                    }
                     handle_recv_cqe(rt, comp);
                 }
                 continue;
