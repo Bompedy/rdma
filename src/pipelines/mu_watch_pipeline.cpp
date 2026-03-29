@@ -281,9 +281,19 @@ void run_mu_watch_pipeline(
               << " active_window=" << config.active_window << std::endl;
 
     // Submit initial window, but poll for SEND completions to avoid filling the send queue
+    size_t loop_iterations = 0;
     while (active < config.active_window && submitted < total_ops) {
+        loop_iterations++;
+
+        if (loop_iterations % 1000000 == 0) {
+            std::cerr << "[Client " << client.id() << "] LOOP STUCK? iterations=" << loop_iterations
+                      << " active=" << active << " submitted=" << submitted << std::endl;
+        }
+
         // Try to submit
+        std::cerr << "[Client " << client.id() << "] About to submit_op(" << active << ")" << std::endl;
         submit_op(active);
+        std::cerr << "[Client " << client.id() << "] After submit_op: active=" << active << " submitted=" << submitted << std::endl;
 
         // Poll for SEND completions to free up send queue space
         const int polled = ibv_poll_cq(client.cq(), static_cast<int>(completions.size()), completions.data());
