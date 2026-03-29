@@ -876,6 +876,22 @@ void post_notify_batch(MuLeaderRuntime& rt) {
 
     const uint64_t watchers_remaining = notif.total_watchers - notif.notify_sent;
     const uint64_t notify_count = std::min(watchers_remaining, MAX_NOTIFY_BATCH);
+
+    // Edge case: No watchers to notify, complete immediately (match syndra_watch behavior)
+    if (notif.total_watchers == 0) {
+        MuResponse resp{};
+        resp.op = static_cast<uint8_t>(MuRpcOp::WatchNotify);
+        resp.status = static_cast<uint8_t>(MuRpcStatus::Ok);
+        resp.client_id = notif.client_id;
+        resp.lock_id = notif.object_id;
+        resp.req_id = notif.req_id;
+        resp.granted_slot = 0;
+        send_response(rt, resp);
+        rt.active_notification.reset();
+        process_next_notification(rt);
+        return;
+    }
+
     notif.notify_completed = 0;  // Reset for this batch
 
     for (uint64_t i = 0; i < notify_count; ++i) {
