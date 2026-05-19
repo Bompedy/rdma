@@ -1,67 +1,115 @@
 #!/bin/bash
+# Idempotent CloudLab node provisioning for RDMA benchmarks.
+# Runs ON the remote node. Called by: make setup
+#
+# Usage: setup.sh <ib_interface> <ib_ip> <ib_netmask> <ib_mtu>
 
-# 1. Update and Install RDMA/InfiniBand packages
-sudo apt update
-sudo apt install -y ibverbs-providers libibverbs1 ibutils ibverbs-utils \
-    rdmacm-utils perftest libibverbs-dev librdmacm-dev infiniband-diags \
-    ninja-build cmake pkg-config build-essential
+set -euo pipefail
 
-# 2. Install Clang 23 via the LLVM automatic repository script
-## This avoids building from source and handles the apt keys for you
-#wget https://apt.llvm.org/llvm.sh
-#chmod +x llvm.sh
-#sudo ./llvm.sh 22
-#rm llvm.sh
+IB_INTERFACE="${1:?Usage: setup.sh <ib_interface> <ib_ip> <ib_netmask> <ib_mtu>}"
+IB_IP="${2:?}"
+IB_NETMASK="${3:?}"
+IB_MTU="${4:?}"
 
-sudo bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)"
+log() { echo "[setup] $*"; }
 
-ulimit -n 65536
+# ── 1. Packages ───────────────────────────────────────────────────────────────
 
-# 3. Load Kernel Modules
-sudo modprobe ib_uverbs ib_ipoib rdma_ucm
-sudo modprobe -r ib_ipoib && sudo modprobe ib_ipoib
-sudo sysctl -w vm.nr_hugepages=2048
+REQUIRED_PKGS=(
+    ibverbs-providers libibverbs1 ibutils ibverbs-utils
+    rdmacm-utils perftest libibverbs-dev librdmacm-dev infiniband-diags
+    build-essential pkg-config
+)
 
-# 4. Set all CPU governors to performance when cpufreq is available
-CPU_GOV_FILES=(/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor)
-if [ -e "${CPU_GOV_FILES[0]}" ]; then
-    for f in "${CPU_GOV_FILES[@]}"; do
-        echo performance | sudo tee "$f" >/dev/null
+missing=()
+for pkg in "${REQUIRED_PKGS[@]}"; do
+    if ! dpkg -s "$pkg" &>/dev/null; then
+        missing+=("$pkg")
+    fi
+done
+
+if [ ${#missing[@]} -gt 0 ]; then
+    log "Installing missing packages: ${missing[*]}"
+    apt-get update -qq
+    apt-get install -y -qq "${missing[@]}"
+else
+    log "All packages already installed"
+fi
+
+# ── 2. Clang ──────────────────────────────────────────────────────────────────
+
+if command -v clang &>/dev/null; then
+    CLANG_VER=$(clang --version | head -1 | grep -oP '\d+' | head -1)
+    log "Clang $CLANG_VER already installed"
+else
+    log "Installing Clang via LLVM apt script..."
+    bash -c "$(wget -qO- https://apt.llvm.org/llvm.sh)"
+
+    LLVM_VER=$(ls /usr/bin/clang-[0-9]* 2>/dev/null | grep -oP '\d+' | sort -rn | head -n1)
+    if [ -n "$LLVM_VER" ]; then
+        update-alternatives --install /usr/bin/clang clang /usr/bin/clang-$LLVM_VER 100
+        update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-$LLVM_VER 100
+        log "Linked clang/clang++ to version $LLVM_VER"
+    fi
+fi
+
+# ── 3. Kernel modules ────────────────────────────────────────────────────────
+
+for mod in ib_uverbs ib_ipoib rdma_ucm; do
+    if ! lsmod | grep -q "^$mod"; then
+        log "Loading kernel module: $mod"
+        modprobe "$mod"
+    fi
+done
+
+# ── 4. Hugepages ──────────────────────────────────────────────────────────────
+
+CURRENT_HUGEPAGES=$(sysctl -n vm.nr_hugepages)
+if [ "$CURRENT_HUGEPAGES" -lt 2048 ]; then
+    log "Setting hugepages: $CURRENT_HUGEPAGES -> 2048"
+    sysctl -w vm.nr_hugepages=2048
+else
+    log "Hugepages already at $CURRENT_HUGEPAGES"
+fi
+
+# ── 5. CPU governors ─────────────────────────────────────────────────────────
+
+GOV_FILES=(/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor)
+if [ -e "${GOV_FILES[0]}" ]; then
+    for f in "${GOV_FILES[@]}"; do
+        echo performance > "$f"
     done
-    echo "Set CPU scaling governor to performance on all cores"
+    log "CPU governors set to performance"
 else
-    echo "CPU scaling governor files not found; skipping performance governor setup"
+    log "CPU governor files not found, skipping"
 fi
 
-# 5. Extract the last digit of the IP from enp8s0d1
-NODE_ID=$(ifconfig enp8s0d1 | grep 'inet ' | awk '{print $2}' | cut -d'.' -f4)
+# ── 6. InfiniBand interface ──────────────────────────────────────────────────
 
-if [ -z "$NODE_ID" ]; then
-    echo "Error: Could not find IP for enp8s0d1"
-    exit 1
-fi
-
-TARGET_IP="192.168.1.$NODE_ID"
-echo "Assigning IP: $TARGET_IP to ibp8s0"
-
-# 6. Configure the InfiniBand interface
-# Ensure the device exists before writing to sysfs
-if [ -d "/sys/class/net/ibp8s0" ]; then
-    echo connected | sudo tee /sys/class/net/ibp8s0/mode
-    sudo ifconfig ibp8s0 $TARGET_IP netmask 255.255.255.0 mtu 65520 up
+if [ -d "/sys/class/net/$IB_INTERFACE" ]; then
+    CURRENT_IP=$(ip -4 addr show "$IB_INTERFACE" 2>/dev/null | grep -oP 'inet \K[\d.]+' || true)
+    if [ "$CURRENT_IP" != "$IB_IP" ]; then
+        log "Configuring $IB_INTERFACE: $IB_IP (was: ${CURRENT_IP:-none})"
+        echo connected > "/sys/class/net/$IB_INTERFACE/mode"
+        ifconfig "$IB_INTERFACE" "$IB_IP" netmask "$IB_NETMASK" mtu "$IB_MTU" up
+    else
+        log "$IB_INTERFACE already configured as $IB_IP"
+    fi
 else
-    echo "Error: Interface ibp8s0 not found."
+    log "WARNING: Interface $IB_INTERFACE not found"
 fi
 
-# Link clang
-#sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-22 100
-#sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-22 100
+# ── 7. ulimits ───────────────────────────────────────────────────────────────
 
-LLVM_VER=$(ls /usr/bin/clang-[0-9]* | grep -oP '\d+' | sort -rn | head -n1)
+LIMITS_LINE="* - nofile 65536"
+if ! grep -qF "$LIMITS_LINE" /etc/security/limits.conf; then
+    log "Adding nofile ulimit to /etc/security/limits.conf"
+    echo "$LIMITS_LINE" >> /etc/security/limits.conf
+else
+    log "ulimit already configured"
+fi
 
-echo "Detected LLVM version $LLVM_VER. Linking..."
+# ── 8. Working directory ─────────────────────────────────────────────────────
 
-sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-$LLVM_VER 100
-sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-$LLVM_VER 100
-
-echo "Done! Node configured as $TARGET_IP"
+mkdir -p /local/rdma
+log "Done"

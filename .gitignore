@@ -1,0 +1,17 @@
+# Experiment config (per-user, per-experiment)
+cluster.toml
+
+# Build artifacts (remote only, but just in case)
+build/
+rdma
+.setup-done
+
+# IDE
+.idea/
+cmake-build-*/
+
+# Results
+results/
+
+# OS
+.DS_Store
