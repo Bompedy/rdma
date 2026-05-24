@@ -3,12 +3,17 @@ cluster.toml
 
 # Build artifacts (remote only, but just in case)
 build/
-rdma
+/rdma
+*.o
 .setup-done
+compile_commands.json
 
 # IDE
 .idea/
 cmake-build-*/
+
+# System headers copied for IDE support
+include/infiniband/
 
 # Results
 results/

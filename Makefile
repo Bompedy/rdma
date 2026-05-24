@@ -31,11 +31,25 @@ SERVER_IPS   := $(shell $(AWK_SERVERS) $(CONFIG) 2>/dev/null | awk -F'"' '{print
 CLIENT_HOSTS := $(shell $(AWK_CLIENTS) $(CONFIG) 2>/dev/null | awk -F'"' '{print $$2}' | awk '{print $$1}')
 CLIENT_IPS   := $(shell $(AWK_CLIENTS) $(CONFIG) 2>/dev/null | awk -F'"' '{print $$2}' | awk '{print $$2}')
 SERVERS_CSV  := $(shell $(AWK_SERVERS) $(CONFIG) 2>/dev/null | awk -F'"' '{print $$2}' | awk '{print $$2}' | paste -sd, -)
+ALL_IPS      := $(SERVER_IPS) $(CLIENT_IPS)
+ALL_IPS_CSV  := $(shell echo "$(SERVER_IPS) $(CLIENT_IPS)" | tr ' ' ',')
 ALL_HOSTS    := $(SERVER_HOSTS) $(CLIENT_HOSTS)
 
 BUILD_CMD = clang++ -std=c++23 -O3 -march=native -ffast-math \
-            $$(find src -name '*.cpp') -Iinclude \
+            src/*.cpp -Iinclude \
             -libverbs -lpthread -o rdma
+
+.PHONY: all
+all:
+	clang++ -std=c++23 -O3 -Iinclude -c src/main.cpp
+	clang++ -std=c++23 -O3 -Iinclude -c src/transport.cpp
+
+.PHONY: test
+test: deploy run
+
+.PHONY: clean
+clean:
+	rm -f rdma *.o
 
 # ── Config guard ─────────────────────────────────────────────────────────────
 
@@ -89,7 +103,7 @@ deploy: check-config .setup-done
 	     ( rsync -az --delete \
 	         --exclude='.git' --exclude='.idea' --exclude='cmake-build-*' \
 	         --exclude='cluster.toml' --exclude='results' --exclude='.DS_Store' \
-	         --exclude='.setup-done' \
+	         --exclude='.setup-done' --exclude='*.pdf' \
 	         -e "ssh $(SSH_OPTS)" \
 	         ./ $(EXPERIMENT_USER)@$$h:$(REMOTE_DIR)/ && \
 	       ssh $(SSH_OPTS) $(EXPERIMENT_USER)@$$h "cd $(REMOTE_DIR) && $(BUILD_CMD)" \
@@ -101,38 +115,44 @@ deploy: check-config .setup-done
 
 # ── Run (servers then clients) ──────────────────────────────────────────────
 
+.PHONY: ping
+ping: check-config
+	@echo "=== All-to-all IB ping ==="
+	@all_ips="$(SERVER_IPS) $(CLIENT_IPS)"; \
+	 hosts=( $(SERVER_HOSTS) $(CLIENT_HOSTS) ); \
+	 pids=(); \
+	 for h in $${hosts[@]}; do \
+	     ( for ip in $$all_ips; do \
+	           until ssh $(SSH_OPTS) $(EXPERIMENT_USER)@$$h "ping -c 1 -W 2 $$ip" >/dev/null 2>&1; do \
+	               sleep 1; \
+	           done; \
+	       done \
+	     ) & pids+=($$!); \
+	 done; \
+	 for p in $${pids[@]}; do wait $$p; done
+	@echo "=== Ping complete ==="
+
 .PHONY: run
 run: check-config
 	@echo "=== Run $(TIMESTAMP) ==="
 	@$(MAKE) --no-print-directory kill 2>/dev/null || true
+	@$(MAKE) --no-print-directory ping
 	@sleep 1
-	@hosts=( $(SERVER_HOSTS) ); \
-	 for i in $$(seq 0 $$(( $${#hosts[@]} - 1 ))); do \
-	     echo "  server $$i: $${hosts[$$i]}"; \
-	     ssh $(SSH_OPTS) $(EXPERIMENT_USER)@$${hosts[$$i]} \
-	         "cd $(REMOTE_DIR) && sudo RDMA_PORT=$(RDMA_PORT) $(BENCH) NODE_ID=$$i IS_CLIENT=0 SERVERS=$(SERVERS_CSV) \
-	          nohup ./rdma > /tmp/rdma-server-$$i.log 2>&1 &"; \
-	     sleep 2; \
-	 done
-	@hosts=( $(CLIENT_HOSTS) ); \
+	@all_hosts=( $(ALL_HOSTS) ); \
 	 pids=(); \
-	 for i in $$(seq 0 $$(( $${#hosts[@]} - 1 ))); do \
-	     echo "  client $$i: $${hosts[$$i]}"; \
-	     ssh $(SSH_OPTS) $(EXPERIMENT_USER)@$${hosts[$$i]} \
-	         "cd $(REMOTE_DIR) && sudo RDMA_PORT=$(RDMA_PORT) $(BENCH) NODE_ID=0 IS_CLIENT=1 MACHINE_ID=$$i SERVERS=$(SERVERS_CSV) \
-	          ./rdma > /tmp/rdma-client-$$i.log 2>&1" & \
+	 for i in $$(seq 0 $$(( $${#all_hosts[@]} - 1 ))); do \
+	     echo "  node $$i: $${all_hosts[$$i]}"; \
+	     ssh $(SSH_OPTS) $(EXPERIMENT_USER)@$${all_hosts[$$i]} \
+	         "cd $(REMOTE_DIR) && sudo NODE_ID=$$i SERVERS=$(ALL_IPS_CSV) \
+	          $(BENCH) ./rdma > /tmp/rdma-node-$$i.log 2>&1" & \
 	     pids+=($$!); \
 	 done; \
-	 echo "  Waiting for clients..."; \
+	 echo "  Waiting for all nodes..."; \
 	 for p in $${pids[@]}; do wait $$p || true; done
 	@mkdir -p results/$(TIMESTAMP)
-	@hosts=( $(SERVER_HOSTS) ); \
-	 for i in $$(seq 0 $$(( $${#hosts[@]} - 1 ))); do \
-	     scp $(SSH_OPTS) $(EXPERIMENT_USER)@$${hosts[$$i]}:/tmp/rdma-server-$$i.log results/$(TIMESTAMP)/ 2>/dev/null || true; \
-	 done
-	@hosts=( $(CLIENT_HOSTS) ); \
-	 for i in $$(seq 0 $$(( $${#hosts[@]} - 1 ))); do \
-	     scp $(SSH_OPTS) $(EXPERIMENT_USER)@$${hosts[$$i]}:/tmp/rdma-client-$$i.log results/$(TIMESTAMP)/ 2>/dev/null || true; \
+	@all_hosts=( $(ALL_HOSTS) ); \
+	 for i in $$(seq 0 $$(( $${#all_hosts[@]} - 1 ))); do \
+	     scp $(SSH_OPTS) $(EXPERIMENT_USER)@$${all_hosts[$$i]}:/tmp/rdma-node-$$i.log results/$(TIMESTAMP)/ 2>/dev/null || true; \
 	 done
 	@echo "=== Done. Results in results/$(TIMESTAMP)/ ==="
 
