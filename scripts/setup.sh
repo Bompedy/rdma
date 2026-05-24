@@ -6,10 +6,11 @@
 
 set -euo pipefail
 
-IB_INTERFACE="${1:?Usage: setup.sh <ib_interface> <ib_ip> <ib_netmask> <ib_mtu>}"
+IB_INTERFACE="${1:?Usage: setup.sh <ib_interface> <ib_ip> <ib_netmask> <ib_mtu> <user>}"
 IB_IP="${2:?}"
 IB_NETMASK="${3:?}"
 IB_MTU="${4:?}"
+RDMA_USER="${5:?}"
 
 log() { echo "[setup] $*"; }
 
@@ -112,4 +113,5 @@ fi
 # ── 8. Working directory ─────────────────────────────────────────────────────
 
 mkdir -p /local/rdma
+chown "$RDMA_USER" /local/rdma
 log "Done"

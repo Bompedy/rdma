@@ -56,11 +56,25 @@ check-config:
 	     echo "  [$$i] $$h ($$ip)"; \
 	     ( scp $(SSH_OPTS) scripts/setup.sh $(EXPERIMENT_USER)@$$h:/tmp/rdma-setup.sh && \
 	       ssh $(SSH_OPTS) $(EXPERIMENT_USER)@$$h \
-	           "sudo bash /tmp/rdma-setup.sh $(IB_INTERFACE) $$ip $(IB_NETMASK) $(IB_MTU)" \
+	           "sudo bash /tmp/rdma-setup.sh $(IB_INTERFACE) $$ip $(IB_NETMASK) $(IB_MTU) $(EXPERIMENT_USER)" \
 	     ) & pids+=($$!); \
 	 done; \
 	 fail=0; for p in $${pids[@]}; do wait $$p || ((fail++)); done; \
 	 [ $$fail -eq 0 ] || { echo "ERROR: $$fail node(s) failed"; exit 1; }
+	@echo "  All-to-all IB ping..."
+	@all_ips="$(SERVER_IPS) $(CLIENT_IPS)"; \
+	 hosts=( $(SERVER_HOSTS) $(CLIENT_HOSTS) ); \
+	 pids=(); \
+	 for h in $${hosts[@]}; do \
+	     ( for ip in $$all_ips; do \
+	           until ssh $(SSH_OPTS) $(EXPERIMENT_USER)@$$h "ping -c 1 -W 2 $$ip" >/dev/null 2>&1; do \
+	               sleep 1; \
+	           done; \
+	       done \
+	     ) & pids+=($$!); \
+	 done; \
+	 for p in $${pids[@]}; do wait $$p; done
+	@echo "  Ping complete"
 	@touch .setup-done
 	@echo "=== Setup complete ==="
 

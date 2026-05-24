@@ -8,7 +8,7 @@ ssh_key = "~/.ssh/cloudlab"
 remote_dir = "/local/rdma"
 ib_interface = "ibp8s0"
 ib_netmask = "255.255.255.0"
-ib_mtu = 65520
+ib_mtu = "65520"
 
 # Servers: node_name = "ssh_hostname  ib_ip"
 # Node ID is determined by order (node0 = 0, node1 = 1, ...)

@@ -47,5 +47,7 @@ int main() {
               << "  SERVERS    = " << env("SERVERS") << "\n"
               << "  RDMA_PORT  = " << env("RDMA_PORT") << "\n";
 
+	std::cout << "Completed it all works" << std::endl;
+
     return 0;
 }
