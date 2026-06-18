@@ -36,7 +36,7 @@ ALL_IPS_CSV  := $(shell echo "$(SERVER_IPS) $(CLIENT_IPS)" | tr ' ' ',')
 ALL_HOSTS    := $(SERVER_HOSTS) $(CLIENT_HOSTS)
 
 BUILD_CMD = clang++ -std=c++23 -O3 -march=native -ffast-math \
-            src/*.cpp -Iinclude \
+            src/*.cpp -Iinclude -Isrc \
             -libverbs -lpthread -o rdma
 
 .PHONY: all
