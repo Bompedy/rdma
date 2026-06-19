@@ -1,3 +1,4 @@
+#include <barrier>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -11,6 +12,7 @@
 #include "rdma/config.h"
 #include "rdma/transport.h"
 #include "primitives/synra_faa.h"
+#include "primitives/synra_tas.h"
 #include "primitives/mu_faa.h"
 #include "primitives/mu_leader.h"
 
@@ -94,6 +96,28 @@ int main() {
             for (auto& w : workers) w.join();
         } else {
             std::fprintf(stderr, "[Node %u] Mu follower, idle.\n", node_id);
+            sleep(3600);
+        }
+    } else if (std::strcmp(primitive, "synra_tas") == 0) {
+        const uint32_t client_node = static_cast<uint32_t>(all_ips.size()) - 1;
+
+        if (node_id == client_node) {
+            std::barrier sync_barrier(num_threads);
+            std::vector<std::thread> workers;
+            workers.reserve(num_threads);
+
+            for (uint32_t t = 0; t < num_threads; ++t) {
+                workers.emplace_back([&, t]() {
+                    uint64_t* lat = &result.latencies_ns[
+                        static_cast<uint64_t>(t) * clients_per_thread * ops_per_client];
+                    run_synra_tas(t, clients_per_thread, transport,
+                                  ops_per_client, lat, sync_barrier);
+                });
+            }
+
+            for (auto& w : workers) w.join();
+        } else {
+            std::fprintf(stderr, "[Node %u] TAS replica, idle.\n", node_id);
             sleep(3600);
         }
     } else {
