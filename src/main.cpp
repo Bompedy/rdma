@@ -4,12 +4,15 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 #include "rdma/benchmark.h"
 #include "rdma/config.h"
 #include "rdma/transport.h"
 #include "primitives/synra_faa.h"
+#include "primitives/mu_faa.h"
+#include "primitives/mu_leader.h"
 
 static std::vector<std::string> split(const char* s, const char delim) {
     std::vector<std::string> out;
@@ -68,11 +71,39 @@ int main() {
         }
 
         for (auto& w : workers) w.join();
+    } else if (std::strcmp(primitive, "mu_faa") == 0) {
+        const uint32_t num_nodes = static_cast<uint32_t>(all_ips.size());
+        const uint32_t leader_node = 0;
+        const uint32_t client_node = num_nodes - 1;
+
+        if (node_id == leader_node) {
+            run_mu_leader(transport, client_node, total_clients * ops_per_client);
+        } else if (node_id == client_node) {
+            std::vector<std::thread> workers;
+            workers.reserve(num_threads);
+
+            for (uint32_t t = 0; t < num_threads; ++t) {
+                workers.emplace_back([&, t]() {
+                    uint64_t* lat = &result.latencies_ns[
+                        static_cast<uint64_t>(t) * clients_per_thread * ops_per_client];
+                    run_mu_faa(t, clients_per_thread, transport,
+                               ops_per_client, lat);
+                });
+            }
+
+            for (auto& w : workers) w.join();
+        } else {
+            std::fprintf(stderr, "[Node %u] Mu follower, idle.\n", node_id);
+            sleep(3600);
+        }
     } else {
         std::fprintf(stderr, "Unknown primitive: %s\n", primitive);
         return 1;
     }
 
-    print_results(result);
+    if (node_id == static_cast<uint32_t>(all_ips.size()) - 1 ||
+        std::strcmp(primitive, "synra_faa") == 0)
+        print_results(result);
+
     return 0;
 }
