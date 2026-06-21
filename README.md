@@ -8,6 +8,7 @@ One-sided RDMA implementations of distributed primitives (locks, queues, latches
 Makefile                 orchestrates everything: build, deploy, run
 cluster.toml.example     reference config — copy and fill in per experiment
 scripts/setup.sh         idempotent node provisioning (runs on remote nodes)
+scripts/primitives/      sweep + plotting for primitive benchmarks
 src/                     C++ source
 include/rdma/            headers
 ```
@@ -81,4 +82,50 @@ client0 = "node3.utah.cloudlab.us  192.168.1.4"
 
 ## Benchmarks
 
-*Coming soon.*
+### Primitives
+
+Three primitive-level microbenchmarks, each measuring single-operation latency under contention:
+
+| Primitive | Description |
+|-----------|-------------|
+| `synra_tas` | Binary test-and-set. All clients CAS one shared register; winner records a toggle via quorum WRITE, losers return immediately. |
+| `synra_faa` | Unit-increment fetch-and-add. Each client FAA on a shared frontier, then WRITE its slot to all replicas. |
+| `mu_faa` | Generic replicated baseline. Client sends to a Mu leader, which replicates and responds. |
+
+**Run a single primitive:**
+
+```sh
+make run BENCH="PRIMITIVE=synra_tas NUM_THREADS=1 CLIENTS_PER_THREAD=16 NUM_OPS=100000"
+```
+
+Environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PRIMITIVE` | `synra_faa` | `synra_tas`, `synra_faa`, or `mu_faa` |
+| `NUM_THREADS` | `1` | OS threads per node |
+| `CLIENTS_PER_THREAD` | `8` | logical clients interleaved per thread |
+| `NUM_OPS` | `100000` | total operations across all clients |
+
+Results print to stderr (mean, stddev, p0/p50/p90/p99/p99.9/p100 latency, throughput) and are collected into `results/<timestamp>/`.
+
+**Sweep + plot:**
+
+```sh
+pip3 install matplotlib pandas   # one-time, local machine only
+./scripts/primitives/sweep.sh
+```
+
+Runs every primitive across a fixed set of (threads, clients-per-thread) pairs (1→128 total clients), collects results into `results/sweep_<timestamp>/sweep.csv`, and auto-generates three plots (`p50.png`, `p90.png`, `p99.png`) — one per percentile, each with three curves (TAS, FAA, Mu-FAA).
+
+Options:
+
+```sh
+# custom pairs, primitives, and op count
+./scripts/primitives/sweep.sh "1:1 1:8 1:16" "synra_tas synra_faa" 50000
+
+# re-generate plots from an existing sweep
+./scripts/primitives/plot.py results/sweep_<timestamp>/sweep.csv
+```
+
+*Service-level benchmarks (locks, watcher, MPMC queue, fail-over) coming soon.*
