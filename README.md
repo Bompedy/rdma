@@ -84,30 +84,44 @@ client0 = "node3.utah.cloudlab.us  192.168.1.4"
 
 ### Primitives
 
-Three primitive-level microbenchmarks, each measuring single-operation latency under contention:
+Primitive-level and non-fault-tolerant comparison microbenchmarks:
 
 | Primitive | Description |
 |-----------|-------------|
 | `synra_tas` | Binary test-and-set. All clients CAS one shared register; winner records a toggle via quorum WRITE, losers return immediately. |
 | `synra_faa` | Unit-increment fetch-and-add. Each client FAA on a shared frontier, then WRITE its slot to all replicas. |
 | `mu_faa` | Generic replicated baseline. Client sends to a Mu leader, which replicates and responds. |
+| `rdma_cas` | Non-replicated one-sided CAS spinlock. Clients retry `CAS(0, 1)` until acquisition and release with an RDMA write of `0`. |
+| `shiftlock` | Writer-only ShiftLock-RC variant for mlx4: a compact `{node, thread, slot}` tail, CAS-loop enqueue, and direct client-to-client mailbox handover. |
 
 **Run a single primitive:**
 
 ```sh
-make run BENCH="PRIMITIVE=synra_tas NUM_THREADS=1 CLIENTS_PER_THREAD=16 NUM_OPS=100000"
+make run BENCH="PRIMITIVE=rdma_cas NUM_THREADS=1 CLIENTS_PER_THREAD=16 NUM_OPS=100000"
 ```
 
 Environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PRIMITIVE` | `synra_faa` | `synra_tas`, `synra_faa`, or `mu_faa` |
+| `PRIMITIVE` | `synra_faa` | `synra_tas`, `synra_faa`, `mu_faa`, `rdma_cas`, or `shiftlock` |
 | `NUM_THREADS` | `1` | OS threads per node |
 | `CLIENTS_PER_THREAD` | `8` | logical clients interleaved per thread |
+| `TOTAL_CLIENTS` | threads × clients/thread | comparison clients distributed across all configured client machines |
 | `NUM_OPS` | `100000` | total operations across all clients |
+| `NUM_LOCKS` | `1` | number of non-replicated comparison locks (maximum 2048) |
+| `ZIPF_SKEW` | `0.0` | comparison lock-selection skew |
 
-Results print to stderr (mean, stddev, p0/p50/p90/p99/p99.9/p100 latency, throughput) and are collected into `results/<timestamp>/`.
+Results print to stderr (mean, stddev, p0/p50/p90/p99/p99.9/p100 latency, goodput) and are collected into `results/<timestamp>/`.
+
+`rdma_cas` and `shiftlock` require one lock server followed by one or more
+client machines. Goodput counts completed acquire-release pairs; reported
+latency ends at successful acquisition. ShiftLock-RC retains the upstream
+writer-queue handover design while fitting mlx4: the server stores only lock
+tails, clients announce and grant ownership with direct RC RDMA writes, and
+waiters poll local memory. It does not include shared readers, RelCnt, leases,
+or recovery, and its CAS-loop enqueue is not the upstream masked extended
+atomic.
 
 **Sweep + plot:**
 
@@ -116,7 +130,7 @@ pip3 install matplotlib pandas   # one-time, local machine only
 ./scripts/primitives/sweep.sh
 ```
 
-Runs every primitive across a fixed set of (threads, clients-per-thread) pairs (1→128 total clients), collects results into `results/sweep_<timestamp>/sweep.csv`, and auto-generates three plots (`p50.png`, `p90.png`, `p99.png`) — one per percentile, each with three curves (TAS, FAA, Mu-FAA).
+Runs the selected primitives across a fixed set of (threads, clients-per-thread) pairs (1→128 total clients), collects results into `results/sweep_<timestamp>/sweep.csv`, and auto-generates latency plots (`p50.png`, `p90.png`, `p99.png`) plus `goodput.png`, with one curve for each selected primitive.
 
 Options:
 

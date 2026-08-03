@@ -1,6 +1,8 @@
 # RDMA Distributed Primitives — Makefile
 # Single entry point for building, deploying, and running on CloudLab.
 
+SHELL     := /bin/bash
+
 CONFIG    := cluster.toml
 TIMESTAMP := $(shell date +%Y%m%d_%H%M%S)
 SSH_KEY   := $(shell awk -F'"' '/^ssh_key/{ print $$2 }' $(CONFIG) 2>/dev/null)
@@ -41,8 +43,8 @@ BUILD_CMD = clang++ -std=c++23 -O3 -march=native -ffast-math \
 
 .PHONY: all
 all:
-	clang++ -std=c++23 -O3 -Iinclude -c src/main.cpp
-	clang++ -std=c++23 -O3 -Iinclude -c src/transport.cpp
+	clang++ -std=c++23 -O3 -Iinclude -Isrc -c src/main.cpp
+	clang++ -std=c++23 -O3 -Iinclude -Isrc -c src/transport.cpp
 
 .PHONY: test
 test: deploy run

@@ -1,11 +1,11 @@
 #pragma once
 
-#include <barrier>
 #include <chrono>
 #include <cstdint>
 #include <infiniband/verbs.h>
 
 #include "rdma/config.h"
+#include "rdma/thread_barrier.h"
 #include "rdma/transport.h"
 
 constexpr uint64_t TAS_FREE = 0;
@@ -31,7 +31,7 @@ inline void run_synra_tas(
     const Transport& transport,
     const uint32_t num_waves,
     uint64_t* latencies,
-    std::barrier<>& sync_barrier
+    ThreadBarrier& sync_barrier
 ) {
     const uint32_t num_nodes = transport.num_nodes();
     const uint32_t num_replicas = num_nodes - 1;
